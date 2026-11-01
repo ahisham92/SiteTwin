@@ -282,6 +282,18 @@ def mewp():
     return _build("mewp", p)
 
 
+def slings():
+    """Four chain legs from the hook down to the corners of a load, 1.5 m long."""
+    parts: list = [("ball", "dark_metal", (0, 0, 0), (0.18, 0.18, 0.18), 0)]
+    spread = 0.55
+    tilt = math.atan2(spread, 1.5)
+    for k in range(4):
+        a = math.pi / 4 + k * math.pi / 2
+        parts.append(("cyl8", "dark_metal", (math.cos(a) * spread / 2, math.sin(a) * spread / 2, -0.75),
+                      (0.03, 0.03, 1.6), a, -tilt))
+    return _build("slings", parts)
+
+
 def worker(vest: str = "hivis", seed: int = 0):
     a = _asset("worker", 1.75)
     if a is not None:

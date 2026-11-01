@@ -158,8 +158,6 @@ def select(root_url: str, key: str, lat: float, lon: float, radius: float, fetch
         children = tile.get("children") or []
         content = tile.get("content") or {}
         uri = content.get("uri") or content.get("url")
-        if dist == 0 and uri and not uri.split("?")[0].endswith(".json"):
-            best = min(best, error)
         if uri and uri.split("?")[0].endswith(".json"):
             url = _absolute(uri, base, key, session[0])
             sub = json.loads(fetch(url, None))
@@ -173,6 +171,10 @@ def select(root_url: str, key: str, lat: float, lon: float, radius: float, fetch
             return
         if uri:
             chosen.append((_absolute(uri, base, key, session[0]), transform))
+            # the site point is on the ellipsoid, and the ground can be tens of metres off it
+            # (the geoid), so "at the site" is within 80 m of it
+            if dist < 80:
+                best = min(best, error)
         elif children:                                   # an empty tile: its children carry it
             for child in children:
                 walk(child, base, transform, depth + 1)

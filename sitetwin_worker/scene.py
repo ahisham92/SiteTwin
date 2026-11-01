@@ -19,6 +19,7 @@ from typing import Any
 import numpy as np
 
 from . import equipment as E
+from . import logistics as L
 from . import materials as M
 from .geo import sun_position
 from .model import Element, footprint
@@ -86,6 +87,25 @@ def _ease(obj, data_path: str) -> None:
             for kp in fc.keyframe_points:
                 kp.interpolation = "BEZIER"
                 kp.easing = "AUTO"
+
+
+def _curves(obj):
+    ad = obj.animation_data
+    if not ad or not ad.action:
+        return []
+    try:
+        return list(ad.action.fcurves)
+    except AttributeError:                   # Blender 5: layered actions
+        return [fc for layer in ad.action.layers for strip in layer.strips
+                for bag in strip.channelbags for fc in bag.fcurves]
+
+
+def _linear(obj) -> None:
+    """Densely keyed motion (worked out frame by frame) plays straight between its keys."""
+    for fc in _curves(obj):
+        if not fc.data_path.startswith("hide"):
+            for kp in fc.keyframe_points:
+                kp.interpolation = "LINEAR"
 
 
 def _constant(obj) -> None:
@@ -449,13 +469,8 @@ def build_model(elements: list[Element], tl: Timeline) -> dict[str, Any]:
             obj.keyframe_insert("scale", frame=a)
             obj.scale = (1, 1, 1)
             obj.keyframe_insert("scale", frame=b)
-        elif how == "lift":
-            drop = 9.0
-            obj.location = (float(base[0]), float(base[1]), float(base[2]) + drop)
-            obj.keyframe_insert("location", frame=a)
-            obj.location = tuple(map(float, base))
-            obj.keyframe_insert("location", frame=b)
-            _ease(obj, "location")
+        elif how in ("lift", "crane"):
+            pass                                  # carried in by the crane (build_plant keys it)
         else:
             obj.scale = (0.9, 0.9, 0.9)
             obj.keyframe_insert("scale", frame=a)
@@ -476,65 +491,108 @@ def _unwrap(prev: float, ang: float) -> float:
     return ang
 
 
-def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict[str, Any],
-                pit_depth: float, rng: random.Random) -> None:
-    by_guid = {e.guid: e for e in elements}
+def plan_site(elements: list[Element], tl: Timeline, fp, top: float, pts: dict[str, Any],
+              margin: float) -> dict[str, Any]:
+    """Where the crane stands and what it lifts when, the truck lane and its visits (logistics.py).
+    Changes tl.appear: pieces the crane lifts become "crane", the rest of the lifted kinds "fit"."""
     windows = plant_windows(tl)
     x0, y0, x1, y1 = fp
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     nx, ny = pts["out"]
     tx, ty = pts["along"]
     gx, gy = pts["gate"]
-
-    # --- tower crane: outside the footprint on the side away from the gate, mid-length
+    out: dict[str, Any] = {"windows": windows, "crane": None, "lifts": []}
     if "tower_crane" in windows:
         s, e = windows["tower_crane"][0]
         half_w, half_d = (x1 - x0) / 2, (y1 - y0) / 2
         off = (abs(nx) * half_w + abs(ny) * half_d) + 6.0
-        crx, cry = cx - nx * off + tx * 0.25 * (abs(ny) * half_w + abs(nx) * half_d), cy - ny * off + ty * 0.25 * (abs(ny) * half_w + abs(nx) * half_d)
+        side = 0.25 * (abs(ny) * half_w + abs(nx) * half_d)
+        crx, cry = cx - nx * off + tx * side, cy - ny * off + ty * side
+        lay = pts["laydown"]
         reach = max(math.hypot(px - crx, py - cry) for px in (x0, x1) for py in (y0, y1))
-        reach = max(reach, math.hypot(pts["laydown"][0] - crx, pts["laydown"][1] - cry)) + 4
-        jib = min(75.0, max(30.0, reach))
-        height = max(top + 12.0, 28.0)
-        mast, slew, trolley, hook = E.tower_crane(height, jib)
-        mast.location = (crx, cry, 0.0)
+        reach = max(reach, math.hypot(lay[0] - crx, lay[1] - cry)) + 4
+        crane = L.Crane(crx, cry, max(top + 12.0, 28.0), min(75.0, max(30.0, reach)))
+        places = {}
+        for el in elements:
+            places[el.guid] = (float((el.lo[0] + el.hi[0]) / 2), float((el.lo[1] + el.hi[1]) / 2),
+                               float(el.lo[2]), float(el.hi[2] - el.lo[2]))
+        crane.lifts = L.plan_lifts(tl.steps, tl.appear, places, (lay[0], lay[1], 0.9), tl.fps, (s, e))
+        out["crane"] = crane
+        out["crane_window"] = (s, e)
+    else:
+        for g, (a, b, how) in list(tl.appear.items()):
+            if how == "lift":
+                tl.appear[g] = (a, b, "fit")
+    bay_in = max(4.0, margin - 6.0)
+    lane = L.Lane(far=(gx + nx * 55, gy + ny * 55), bay=(gx - nx * bay_in, gy - ny * bay_in))
+    out["lane"] = lane
+    out["visits"] = L.plan_visits(windows, lane, tl.fps)
+    out["pump_at"] = (lane.bay[0] + tx * 5.5, lane.bay[1] + ty * 5.5)
+    return out
+
+
+def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict[str, Any],
+                pit_depth: float, rng: random.Random, plan: dict[str, Any] | None = None) -> None:
+    by_guid = {e.guid: e for e in elements}
+    plan = plan or {}
+    windows = plan.get("windows") or plant_windows(tl)
+    x0, y0, x1, y1 = fp
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    nx, ny = pts["out"]
+    tx, ty = pts["along"]
+    gx, gy = pts["gate"]
+
+    # --- tower crane: one lift at a time, the load on the hook from the laydown to its place
+    crane = plan.get("crane")
+    if crane is not None:
+        s, e = plan["crane_window"]
+        mast, slew, trolley, hook = E.tower_crane(crane.height, crane.jib)
+        mast.location = (crane.x, crane.y, 0.0)
         _visible(mast, s, e, tl.frames)
         if trolley is not None:
-            lay = pts["laydown"]
-            prev = 0.0
-            keys = []
-            for st in tl.steps:
-                if not (s <= st.start < e):
-                    continue
-                lifted = [g for g in st.guids if tl.appear[g][2] == "lift"]
-                targets = lifted or st.guids
-                stride = max(1, int(len(targets) / max(1, (st.end - st.start) / (tl.fps * 2.5))))
-                for g in targets[::stride]:
-                    a, b, _ = tl.appear[g]
-                    el = by_guid[g]
-                    c = el.centre
-                    # the load comes from the laydown area, then swings to where it goes
-                    keys.append((max(s, a - int(tl.fps * 1.2)), lay[0], lay[1], 1.5))
-                    keys.append((b, float(c[0]), float(c[1]), float(el.hi[2]) + 0.5))
-            keys.sort()
-            last_f = -999
-            for f, px, py, pz in keys:
-                if f - last_f < 6:
-                    continue
-                last_f = f
-                ang = _unwrap(prev, math.atan2(py - cry, px - crx))
-                prev = ang
-                dist = min(jib - 1.5, max(4.0, math.hypot(px - crx, py - cry)))
+            lines, block = hook
+            slings = E.slings()
+            slings.parent = block
+            slings.location = (0, 0, -1.2)
+            objs = {o.name[3:]: o for o in __import__("bpy").data.objects if o.name.startswith("el_")}
+            tops = sorted((tl.appear[g][1], float(by_guid[g].hi[2])) for g in tl.appear if g in by_guid)
+            prev_a = None
+            carrying = None
+            first = crane.lifts[0].start if crane.lifts else s
+            last = crane.lifts[-1].end + 2 if crane.lifts else s + 1
+            built_top, k = 0.0, 0
+            for f in range(max(s, first - 4), min(e, last) + 1, 2):
+                while k < len(tops) and tops[k][0] <= f:
+                    built_top = max(built_top, tops[k][1])
+                    k += 1
+                ang, rad, tip, lift, base_z = crane.pose(f, built_top)
+                ang = ang if prev_a is None else L.unwrap(prev_a, ang)
+                prev_a = ang
                 slew.rotation_euler = (0, 0, ang)
                 slew.keyframe_insert("rotation_euler", frame=f)
-                trolley.location = (dist, 0, 0)
+                trolley.location = (rad, 0, 0)
                 trolley.keyframe_insert("location", frame=f)
-                drop = max(1.0, height + 1.2 - pz)
-                lines, block = hook
+                drop = max(1.2, crane.height + 0.5 - tip)
                 lines.scale = (1, 1, drop - 1.0)
                 lines.keyframe_insert("scale", frame=f)
                 block.location = (0, 0, 0.7 - drop + 1.0)
                 block.keyframe_insert("location", frame=f)
+                held = lift.guid if lift is not None else None
+                if held != carrying:
+                    slings.hide_render = held is None
+                    slings.keyframe_insert("hide_render", frame=f)
+                    carrying = held
+                if lift is not None and lift.guid in objs:
+                    hx, hy = crane.hook_xy(ang, rad)
+                    ob = objs[lift.guid]
+                    ob.location = (hx, hy, base_z)
+                    ob.keyframe_insert("location", frame=f)
+            for lift in crane.lifts:                       # set down exactly in its place
+                if lift.guid in objs:
+                    objs[lift.guid].location = lift.place
+                    objs[lift.guid].keyframe_insert("location", frame=lift.end + 1)
+            for o in (slew, trolley, lines, block, *objs.values()):
+                _linear(o)
 
     # --- piling rig and excavator in the pit during the foundations
     pile_guids = [g for st in tl.steps if st.phase == "Foundations" for g in st.guids
@@ -563,36 +621,44 @@ def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict
             ex.keyframe_insert("location", frame=f)
             ex.keyframe_insert("rotation_euler", frame=f)
 
-    # --- trucks: arrive through the gate, stand by the building, leave
-    stand = (cx + nx * ((abs(nx) * (x1 - x0) + abs(ny) * (y1 - y0)) / 2 + 6), cy + ny * ((abs(nx) * (x1 - x0) + abs(ny) * (y1 - y0)) / 2 + 6))
-    heading_in = math.atan2(-ny, -nx)
-    for kind, builder, side in (("mixer_truck", E.mixer_truck, 1), ("flatbed_truck", E.flatbed_truck, -1)):
-        for (s, e) in windows.get(kind, []):
-            truck = builder()
-            _visible(truck, s, e, tl.frames)
-            cycle = int(tl.fps * 14)
-            f = s
-            far = (gx + nx * 70 + tx * side * 2, gy + ny * 70 + ty * side * 2)
-            spot = (stand[0] + tx * side * 9, stand[1] + ty * side * 9)
-            truck.rotation_euler = (0, 0, heading_in)
-            truck.keyframe_insert("rotation_euler", frame=s)
-            while f < e:
-                truck.location = (*far, 0.0)
+    # --- trucks: in along the lane to the bay, stand, reverse out; one in the lane at a time
+    lane = plan.get("lane")
+    if lane is not None:
+        builders = {"mixer_truck": E.mixer_truck, "flatbed_truck": E.flatbed_truck}
+        fleet: dict[str, list] = {}
+        for v in plan.get("visits", []):
+            # a truck of this kind that is free again, or a new one
+            pool = fleet.setdefault(v.kind, [])
+            truck = next((t for t, free in pool if free < v.arrive), None)
+            if truck is None:
+                truck = builders[v.kind]()
+                truck.location = (0, 0, -500)
+                truck.keyframe_insert("location", frame=0)
+                pool.append([truck, -1])
+            for item in pool:
+                if item[0] is truck:
+                    item[1] = v.gone
+            truck.rotation_euler = (0, 0, lane.heading_in)
+            truck.keyframe_insert("rotation_euler", frame=v.arrive)
+            truck.location = (0, 0, -500)
+            truck.keyframe_insert("location", frame=v.arrive - 1)
+            for f in range(v.arrive, v.gone + 1, 3):
+                (x, y), _ = L.truck_at(v, f, lane)
+                truck.location = (x, y, 0.02)
                 truck.keyframe_insert("location", frame=f)
-                truck.location = (*spot, 0.02)
-                truck.keyframe_insert("location", frame=min(e, f + int(tl.fps * 4)))
-                truck.keyframe_insert("location", frame=min(e, f + int(tl.fps * 9)))
-                truck.location = (*far, 0.0)
-                truck.keyframe_insert("location", frame=min(e, f + cycle))
-                f += cycle
-            _ease(truck, "location")
+            truck.location = (0, 0, -500)
+            truck.keyframe_insert("location", frame=v.gone + 1)
+        for pool in fleet.values():
+            for truck, _ in pool:
+                _linear(truck)
 
-    # --- concrete pump: stands by the building with its boom over the pour
+    # --- concrete pump: parked beside the bay, out of the lane, its boom towards the pour
     for (s, e) in windows.get("concrete_pump", []):
         pump = E.concrete_pump()
         _visible(pump, s, e, tl.frames)
-        pump.location = (stand[0] - tx * 2, stand[1] - ty * 2, 0.02)
-        pump.rotation_euler = (0, 0, math.atan2(cy - stand[1], cx - stand[0]))
+        px, py = plan.get("pump_at", (cx + nx * 10, cy + ny * 10))
+        pump.location = (px, py, 0.02)
+        pump.rotation_euler = (0, 0, math.atan2(cy - py, cx - px))
 
     # --- MEWP round the facade
     for (s, e) in windows.get("mewp", []):
@@ -610,37 +676,69 @@ def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict
             lift.keyframe_insert("rotation_euler", frame=f)
 
 
-def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: random.Random) -> None:
+def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: random.Random,
+                plan: dict[str, Any] | None = None) -> None:
+    """Each step's crew on the floor it is building, out of the truck lane and never where the
+    crane is setting a load down; riggers at the laydown; a banksman at the gate, beside the lane."""
+    plan = plan or {}
+    lane = plan.get("lane")
+    crane = plan.get("crane")
     x0, y0, x1, y1 = fp
     pool = max(st.crew for st in tl.steps) if tl.steps else 0
     people = [E.worker("hivis" if k % 3 else "hivis_yellow", seed=k) for k in range(pool)]
-    for k, w in enumerate(people):
+    for w in people:
         w.location = (0, 0, -500)                       # parked out of sight
         w.keyframe_insert("location", frame=0)
-        for st in tl.steps:
-            if k >= st.crew:
+    for st in tl.steps:
+        z = _level_for(st)
+        loads = [l.place[:2] for l in (crane.lifts if crane else []) if st.start <= l.end and l.start <= st.end]
+        spots = L.crew_spots(st.crew, (x0, y0, x1, y1), z, rng, lane, loads)
+        ends = L.crew_spots(st.crew, (x0, y0, x1, y1), z, rng, lane, loads)
+        for k, w in enumerate(people):
+            if k >= len(spots):
                 w.location = (0, 0, -500)
                 w.keyframe_insert("location", frame=st.start)
                 continue
-            z = _level_for(st)
-            sx = rng.uniform(x0 + 1, x1 - 1)
-            sy = rng.uniform(y0 + 1, y1 - 1)
-            w.location = (sx, sy, z)
-            w.rotation_euler = (0, 0, rng.uniform(-math.pi, math.pi))
+            a = spots[k]
+            # a short walk towards another safe spot, never more than 4 m
+            b = ends[k] if k < len(ends) else a
+            d = math.dist(a[:2], b[:2])
+            if d > 4.0:
+                b = (a[0] + (b[0] - a[0]) * 4.0 / d, a[1] + (b[1] - a[1]) * 4.0 / d, z)
+            w.location = a
+            w.rotation_euler = (0, 0, math.atan2(b[1] - a[1], b[0] - a[0]) if d > 0.1 else rng.uniform(-math.pi, math.pi))
             w.keyframe_insert("location", frame=st.start)
             w.keyframe_insert("rotation_euler", frame=st.start)
-            w.location = (sx + rng.uniform(-3, 3), sy + rng.uniform(-3, 3), z)
+            w.location = b
             w.keyframe_insert("location", frame=max(st.start + 1, st.end - 1))
+    for w in people:
         w.location = (0, 0, -500)
         w.keyframe_insert("location", frame=tl.build_end)
-    # a few by the gate the whole time
+        _constant_jumps(w)
     gx, gy = pts["gate"]
     nx, ny = pts["out"]
     tx, ty = pts["along"]
-    for k in range(3):
+    lay = pts["laydown"]
+    # two riggers by the laydown, slinging the loads; a banksman by the gate, beside the lane
+    for k, (px, py) in enumerate([(lay[0] + tx * 4.5 - nx * 1.5, lay[1] + ty * 4.5 - ny * 1.5),
+                                  (lay[0] + tx * 4.5 + nx * 1.5, lay[1] + ty * 4.5 + ny * 1.5),
+                                  (gx - nx * 2 + tx * 6.5, gy - ny * 2 + ty * 6.5)]):
+        if lane is not None and not lane.keeps_clear((px, py)):
+            px, py = px + tx * 3, py + ty * 3
         w = E.worker("hivis_yellow", seed=100 + k)
-        w.location = (gx - nx * (4 + k * 1.5) + tx * (k - 1) * 2, gy - ny * (4 + k * 1.5) + ty * (k - 1) * 2, 0.02)
-        w.rotation_euler = (0, 0, rng.uniform(-math.pi, math.pi))
+        w.location = (px, py, 0.02)
+        w.rotation_euler = (0, 0, math.atan2(gy - py, gx - px) if k == 2 else math.atan2(lay[1] - py, lay[0] - px))
+
+
+def _constant_jumps(obj) -> None:
+    """A person sent away (z -500) or brought back goes in one frame, not by sliding."""
+    for fc in _curves(obj):
+        if fc.data_path == "location":
+            pts = fc.keyframe_points
+            for i, kp in enumerate(pts):
+                nxt = pts[i + 1] if i + 1 < len(pts) else None
+                if kp.co[1] < -400 or (nxt is not None and nxt.co[1] < -400):
+                    kp.interpolation = "CONSTANT"
 
 
 def _level_for(st) -> float:
@@ -825,9 +923,10 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     # the floor each step's crew stands on
     for st in tl.steps:
         st.floor = -pit_depth + 0.02 if st.phase == "Foundations" else _floor_of(st, elements)
+    plan = plan_site(elements, tl, fp, top, pts, m)
     build_model(elements, tl)
-    build_plant(elements, tl, fp, top, pts, pit_depth, rng)
-    build_crews(tl, fp, pts, pit_depth, rng)
+    build_plant(elements, tl, fp, top, pts, pit_depth, rng, plan)
+    build_crews(tl, fp, pts, pit_depth, rng, plan)
     elev, az = build_light(manifest["lat"], manifest["lon"], opts.when)
     build_camera(fp, top, tl, opts, pts["out"])
     _all_constant_hides()
