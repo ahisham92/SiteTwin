@@ -42,3 +42,57 @@ def test_the_scene_has_the_building_the_site_and_the_plant(tmp_path):
     assert first.hide_render
     bpy.context.scene.frame_set(tl.frames)
     assert not any(o.hide_render for o in bpy.data.objects if o.name.startswith("el_"))
+
+
+def _glb_mesh(points_ecef, faces):
+    """A plain (uncompressed) glb whose one node carries the Earth-centred offset, like Google's."""
+    import struct
+    from sitetwin_worker import google3d as g
+    origin = points_ecef[0]
+    local = np.array([(g.Y_UP_INV @ np.append(p - origin, 0))[:3] for p in points_ecef], dtype=np.float32)
+    idx = np.array(faces, dtype=np.uint32).reshape(-1)
+    binary = local.tobytes() + idx.tobytes()
+    doc = {"asset": {"version": "2.0", "copyright": "Test data"}, "scene": 0, "scenes": [{"nodes": [0]}],
+           "nodes": [{"mesh": 0, "translation": list((g.Y_UP_INV @ np.append(origin, 1))[:3])}],
+           "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+           "buffers": [{"byteLength": len(binary)}],
+           "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": local.nbytes},
+                           {"buffer": 0, "byteOffset": local.nbytes, "byteLength": idx.nbytes}],
+           "accessors": [{"bufferView": 0, "componentType": 5126, "count": len(local), "type": "VEC3",
+                          "min": local.min(0).tolist(), "max": local.max(0).tolist()},
+                         {"bufferView": 1, "componentType": 5125, "count": len(idx), "type": "SCALAR"}]}
+    return g.write_glb(doc, binary)
+
+
+def test_google_tiles_are_placed_cut_round_the_site_and_set_on_its_ground(tmp_path):
+    from sitetwin_worker import google3d as g
+    from sitetwin_worker import scene
+    lat, lon = 33.66, 35.42
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    # a 400 m square of ground at 25 m above the ellipsoid, cut into a 20 x 20 grid
+    n, pts, faces = 21, [], []
+    for i in range(n):
+        for j in range(n):
+            e, nn = -200 + 20 * j, -200 + 20 * i
+            pts.append(g.ecef(lat + nn / 110900, lon + e / (111320 * np.cos(np.radians(lat))), 25.0))
+    for i in range(n - 1):
+        for j in range(n - 1):
+            a = i * n + j
+            faces += [(a, a + 1, a + n + 1), (a, a + n + 1, a + n)]
+    env = tmp_path / "env"
+    (env / "google").mkdir(parents=True)
+    data, credit = g.to_local(_glb_mesh(np.array(pts), faces), np.eye(4), g.enu_matrix(lat, lon))
+    (env / "google" / "tile_0000.glb").write_bytes(data)
+    manifest = {"lat": lat, "lon": lon, "radius": 180, "google": {"folder": "google", "files": ["tile_0000.glb"]}}
+    gr = scene.Ground(manifest, env, (-15, -15, 15, 15))
+    level = scene.build_google(gr, manifest, env, (-20, -20, 20, 20))
+    assert level == pytest.approx(25.0, abs=0.3)
+    google = [o for o in bpy.data.objects if o.name.startswith("google_")]
+    assert google
+    zs = [v.co.z for o in google for v in o.data.vertices]
+    assert max(abs(z) for z in zs) < 0.4                        # its ground now meets the site's
+    for o in google:
+        for p in o.data.polygons:
+            c = p.center
+            assert not (-20 <= c.x <= 20 and -20 <= c.y <= 20)    # the site is cut out
+            assert np.hypot(c.x, c.y) <= 181                      # and nothing beyond the radius

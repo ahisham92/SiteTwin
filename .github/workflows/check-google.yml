@@ -1,0 +1,54 @@
+name: Check Google 3D tiles
+
+# Asks Google for its photo-real 3D tiles around a place and says how detailed they are,
+# with the SITETWIN_GOOGLE_KEY secret (never printed). Run by hand from the Actions tab.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lat:
+        description: "Latitude"
+        default: "33.8938"
+      lon:
+        description: "Longitude"
+        default: "35.5018"
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install numpy pillow
+      - name: Ask Google
+        env:
+          SITETWIN_GOOGLE_KEY: ${{ secrets.SITETWIN_GOOGLE_KEY }}
+          LAT: ${{ inputs.lat || '' }}
+          LON: ${{ inputs.lon || '' }}
+        run: |
+          python - <<'PY'
+          import os, tempfile, time
+          from pathlib import Path
+          from sitetwin_worker import google3d
+          from sitetwin_worker.environment import http_get
+          key = os.environ.get("SITETWIN_GOOGLE_KEY", "").strip()
+          if not key:
+              raise SystemExit("::error::The SITETWIN_GOOGLE_KEY secret is missing or empty")
+          places = [(float(os.environ["LAT"]), float(os.environ["LON"]))] if os.environ.get("LAT") else \
+                   [(33.8938, 35.5018), (33.66, 35.42), (25.1972, 55.2744)]
+          for lat, lon in places:
+              t = time.time()
+              try:
+                  tiles, best = google3d.select(google3d.ROOT, key, lat, lon, 350, http_get)
+                  print(f"{lat}, {lon}: {len(tiles)} tiles, finest at the site {best:.2f} m "
+                        f"({'detailed 3D' if best <= google3d.DETAILED else 'no detailed 3D'}), {time.time() - t:.0f} s")
+                  if tiles and best <= google3d.DETAILED:
+                      out = Path(tempfile.mkdtemp())
+                      got = google3d.gather(lat, lon, 120, out, http_get, key=key)
+                      size = sum(f.stat().st_size for f in out.iterdir())
+                      print(f"  downloaded {len(got['files'])} tiles within 120 m, {size / 1e6:.1f} MB; credit: {got['credit']}")
+              except Exception as exc:
+                  print(f"{lat}, {lon}: failed: {type(exc).__name__}: {str(exc).replace(key, '…')}")
+          PY
