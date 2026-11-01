@@ -73,10 +73,24 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str]) -> None:
     d.rectangle([bx0, by - int(4 * u), bx1, by], fill=(255, 255, 255, 60))
     d.rectangle([bx0, by - int(4 * u), bx0 + (bx1 - bx0) * prog, by], fill=(245, 165, 36, 255))
     if credits:
+        # right-aligned lines no wider than 60% of the frame, so nothing runs off the edge
         f = _font(int(15 * u))
-        txt = "  ·  ".join(credits)
-        tw = d.textlength(txt, font=f)
-        d.text((W - pad - tw, H - box_h + int(8 * u)), txt, font=f, fill=(220, 225, 235, 200))
+        pieces = [p.strip() for c in credits for p in c.replace("; ", " · ").split(" · ") if p.strip()]
+        lines, cur = [], ""
+        for p in pieces:
+            trial = f"{cur}  ·  {p}" if cur else p
+            if cur and d.textlength(trial, font=f) > W * 0.6:
+                lines.append(cur)
+                cur = p
+            else:
+                cur = trial
+        if cur:
+            lines.append(cur)
+        step_h = int(19 * u)
+        lines = lines[: max(1, (box_h - int(30 * u)) // step_h)]
+        for i, txt in enumerate(lines):
+            tw = d.textlength(txt, font=f)
+            d.text((W - pad - tw, H - box_h + int(4 * u) + i * step_h), txt, font=f, fill=(220, 225, 235, 200))
     im.save(path)
 
 
