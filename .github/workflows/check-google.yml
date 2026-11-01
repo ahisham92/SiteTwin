@@ -4,6 +4,8 @@ name: Check Google 3D tiles
 # with the SITETWIN_GOOGLE_KEY secret (never printed). Run by hand from the Actions tab.
 
 on:
+  push:
+    branches: [claude/google-fill]
   workflow_dispatch:
     inputs:
       lat:
@@ -28,6 +30,7 @@ jobs:
           LAT: ${{ inputs.lat || '' }}
           LON: ${{ inputs.lon || '' }}
         run: |
+          PYTHONPATH=. python tools/google_inspect.py "${LAT:-33.8938}" "${LON:-35.5018}" 350 | sed "s/$SITETWIN_GOOGLE_KEY/…/g"
           python - <<'PY'
           import os, tempfile, time
           from pathlib import Path
