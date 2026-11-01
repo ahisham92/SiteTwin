@@ -29,18 +29,18 @@ API = "https://api.sketchfab.com/v3/models/{uid}/download"
 
 #: kind -> the model used for it. Picked by hand from tools/sketchfab_search.py.
 CATALOG: dict[str, dict[str, Any]] = {
-    "worker": {"uid": "9075b0deb11b40bca7f5ce8a8e7b63cb", "name": "Construction Worker",
-               "author": "katelaruine", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.75},
-    "mixer_truck": {"uid": "a8cd2a2cc2e243b59c168c4bb28e489b", "name": "Blue Cement Mixer Truck",
-                    "author": "sandisbergvalds21", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.0},
+    "worker": {"uid": "14cb64770751479094e2ca07fb5e4793", "name": "Pete",
+               "author": "drifter33", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.75},
+    "mixer_truck": {"uid": "8d1d88a5955f4e7da13562bb7bec146f", "name": "Concrete Mixer Truck",
+                    "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.0},
     "concrete_pump": {"uid": "4328809da1c94ffb95a8eeb60bb6ce9b", "name": "Concrete Pump Truck (Boom Pump)",
                       "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "length": 11.0},
     "piling_rig": {"uid": "997e8984809540e5b3e5ea693eb96983", "name": "Pile Driver",
                    "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "height": 22.0},
     "excavator": {"uid": "3dde2c846cc54a4d9fabcc821c9b9caa", "name": "Hitachi excavator",
                   "author": "thesidekick", "licence": "CC BY 4.0", "yaw": 180.0, "length": 9.5},
-    "flatbed_truck": {"uid": "59889032d0ad457c81d7e058c79eedf8", "name": "Scania truck",
-                      "author": "PusztaiAndras", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.5},
+    "flatbed_truck": {"uid": "8ee4c1329219413e879760a25208ee15", "name": "Mercedes Actros com Semi Reboque Prancha",
+                      "author": "LuizZed36", "licence": "CC BY 4.0", "yaw": 0.0, "length": 16.5},
     "mewp": {"uid": "4823e73dd2f94cbd9291b5d55df7f226", "name": "Electric Scissor Lift 1",
              "author": "cloudhub", "licence": "CC BY 4.0", "yaw": 0.0, "length": 2.5},
 }
