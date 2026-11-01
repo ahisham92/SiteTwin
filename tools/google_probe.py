@@ -16,6 +16,13 @@ for depth in range(40):
     uri = c.get("uri", "")
     kids = tile.get("children") or []
     d = g.distance_to_volume(tile["boundingVolume"], site, T)
+    bv = tile["boundingVolume"]
+    if "box" in bv:
+        c = (T @ np.append(bv["box"][:3], 1))[:3]
+        print("   box centre", [round(v) for v in c], "half", [round(float(np.linalg.norm(bv["box"][3 + 3 * k:6 + 3 * k]))) for k in range(3)],
+              "site", [round(v) for v in site], "transform" in tile)
+    else:
+        print("   volume", list(bv))
     print(depth, "err", tile.get("geometricError"), "dist", round(d, 1), "kids", len(kids), "content", uri.split("?")[0][-30:])
     if uri.split("?")[0].endswith(".json"):
         url2 = g._absolute(uri, base, key, session)
@@ -29,4 +36,7 @@ for depth in range(40):
             data = http_get(g._absolute(uri, base, key, session))
             print("leaf glb bytes", len(data))
         break
+    if depth < 4:
+        for k in kids:
+            print("     child", k["boundingVolume"].get("box", k["boundingVolume"])[:3], round(g.distance_to_volume(k["boundingVolume"], site, T)))
     tile = min(kids, key=lambda k: g.distance_to_volume(k["boundingVolume"], site, T))
