@@ -25,7 +25,7 @@ from typing import Iterable
 Point = tuple[float, float]
 
 #: The shortest crane cycle the film shows, in seconds of film.
-CYCLE = 2.6
+CYCLE = 2.0
 #: Fractions of a cycle: go back to the laydown, lower to the load, sling it, hoist, slew, lower in, let go.
 PHASES = (("return", 0.18), ("down", 0.08), ("sling", 0.08), ("hoist", 0.14), ("slew", 0.28),
           ("lower", 0.16), ("release", 0.08))
@@ -160,7 +160,7 @@ def plan_lifts(steps: Iterable, appear: dict[str, tuple[int, int, str]], places:
             continue
         start = max(st.start, free_from)
         room = max(0, min(st.end, e_win) - start)
-        n = min(len(lifted), room // cycle)
+        n = min(len(lifted), max(1 if room >= 0.7 * cycle else 0, room // cycle))
         if n <= 0:
             for g in lifted:
                 a, b, _ = appear[g]
@@ -175,7 +175,7 @@ def plan_lifts(steps: Iterable, appear: dict[str, tuple[int, int, str]], places:
                 appear[g] = (a, b, "fit")
                 continue
             x, y, z, h = places[g]
-            lift = Lift(g, int(f), int(f + span) - 1, pick, (x, y, z), h)
+            lift = Lift(g, int(f), int(f + min(span, cycle * 1.6)) - 1, pick, (x, y, z), h)
             lifts.append(lift)
             appear[g] = (lift.attached, lift.end, "crane")
             f += span
