@@ -1,0 +1,8 @@
+# The render worker (a machine with a GPU ideally; a CPU works, slowly).
+# bpy is Blender itself as a Python module: it must match the Python version
+# (bpy 5.2 wants Python 3.13). Nothing else needs installing; ffmpeg must be on PATH.
+-r requirements.txt
+bpy>=5.2,<6
+ifcopenshell>=0.8
+numpy>=1.26
+pillow>=10.0
