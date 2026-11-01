@@ -4,8 +4,6 @@ name: Check Google 3D tiles
 # with the SITETWIN_GOOGLE_KEY secret (never printed). Run by hand from the Actions tab.
 
 on:
-  push:
-    branches: [claude/google-fill]
   workflow_dispatch:
     inputs:
       lat:
