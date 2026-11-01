@@ -1,0 +1,46 @@
+name: Look at Google 3D tiles
+
+# Imports Google's tiles round a place into Blender and renders them alone, so gaps and blur
+# can be seen. The pictures go to the diagnostics branch. The key is never printed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lat: {description: "Latitude", default: "33.8938"}
+      lon: {description: "Longitude", default: "35.5018"}
+
+permissions:
+  contents: write
+
+jobs:
+  look:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: |
+          sudo apt-get -qq install -y libxrender1 libxxf86vm1 libxfixes3 libxi6 libxkbcommon0 libsm6 libgl1 libegl1 libgomp1 > /dev/null
+          pip install -q bpy==5.2.3 numpy pillow
+      - name: Render the tiles
+        env:
+          SITETWIN_GOOGLE_KEY: ${{ secrets.SITETWIN_GOOGLE_KEY }}
+          LAT: ${{ inputs.lat || '33.8938' }}
+          LON: ${{ inputs.lon || '35.5018' }}
+        run: |
+          set -o pipefail
+          PYTHONPATH=. python tools/google_look.py "$LAT" "$LON" 350 out 2>&1 | grep -v "^Fra:\|HIPEW" | sed "s/$SITETWIN_GOOGLE_KEY/…/g" | tee out/report.txt || (mkdir -p out; true)
+      - name: Keep the pictures
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN: ${{ github.run_id }}
+        run: |
+          cd out
+          for f in *; do mv "$f" "$RUN-$f"; done
+          git init -q -b diagnostics
+          git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
+          git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
+          git fetch -q origin diagnostics && git reset -q --soft FETCH_HEAD || true
+          git add . && git commit -qm "Google look from run $RUN" && git push -q origin HEAD:diagnostics

@@ -215,11 +215,14 @@ def build_terrain(g: Ground, manifest: dict[str, Any], folder: Path, sink: float
     return obj
 
 
-def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, gate_side: str):
+def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, gate_side: str,
+               graded_track: bool = False):
     """Gravel pad over the site with an excavation for the foundations, hoarding with a gate,
     cabins and a laydown area. Returns useful points (gate, laydown, parking)."""
     x0, y0, x1, y1 = g.site
     e = 2 * g.radius / (g.n - 1)                        # one terrain cell
+    if graded_track:
+        e += 4.0                                        # and under Google's cut edge
     X0, Y0, X1, Y1 = x0 - e, y0 - e, x1 + e, y1 + e     # the pad tucks under the terrain edge
     px0, py0, px1, py1 = pit
     slope = max(depth * 0.6, 0.01)
@@ -282,14 +285,15 @@ def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, 
         stacks.append(("box", mat, (sx, sy, 0.45 if k % 2 == 0 else 0.25), (2.4, 6.0, 0.9 if k % 2 == 0 else 0.5), gang))
     E._build("laydown", stacks)
     # an access track from the gate out to the edge of the scene
-    track_len = g.radius * 0.9
+    # (on Google's ground the road out is graded flat for 60 m, and the real roads go on)
+    track_len = 62.0 if graded_track else g.radius * 0.9
     tv = []
     tf = []
     steps = 24
     for k in range(steps + 1):
         d = k / steps * track_len
         cx, cy = gx + nx * d, gy + ny * d
-        zz = (g.at(cx, cy) if d > 2 else 0.0) + 0.06
+        zz = (g.at(cx, cy) if d > 2 and not graded_track else 0.0) + 0.06
         tv += [(cx + tx * 3.5, cy + ty * 3.5, zz), (cx - tx * 3.5, cy - ty * 3.5, zz)]
         if k:
             a = 2 * (k - 1)
@@ -299,75 +303,126 @@ def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, 
 
 
 def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
-                 keep_out: tuple[float, float, float, float]) -> float | None:
-    """Google's photo-real surroundings: the tiles imported, the site itself cut out of them
-    (it is rebuilt by the sequence), cropped to the radius, and lowered so their ground meets
-    the site's level. Returns how far they were lowered, or None if there are none."""
+                 keep_out: tuple[float, float, float, float],
+                 access: tuple[tuple[float, float], tuple[float, float]] | None = None) -> tuple[float, float] | None:
+    """Google's photo-real surroundings: the detailed tiles round the site and the coarse ring out
+    to the horizon, the site itself cut out (it is rebuilt by the sequence), and everything
+    lowered so the ground round the site meets the site's level. The ground just outside the
+    hoarding, and the access road out of the gate (``access``: gate point, outward direction),
+    are graded to the site's level, as a real site's are. Returns (how far it was lowered, the
+    lowest ground left), or None if there are none."""
     info = manifest.get("google")
     if not info:
         return None
     import bmesh
     import bpy
     sub = folder / info["folder"]
-    before = set(bpy.data.objects)
-    for name in info["files"]:
-        try:
-            bpy.ops.import_scene.gltf(filepath=str(sub / name))
-        except Exception:                                   # noqa: BLE001 - one bad tile is a small gap
-            continue
-    new = [o for o in bpy.data.objects if o not in before]
-    meshes = [o for o in new if o.type == "MESH"]
-    if not meshes:
+
+    def load(names: list[str]) -> list:
+        before = set(bpy.data.objects)
+        for name in names:
+            try:
+                bpy.ops.import_scene.gltf(filepath=str(sub / name))
+            except Exception:                               # noqa: BLE001 - one bad tile is a small gap
+                continue
+        new = [o for o in bpy.data.objects if o not in before]
+        meshes = [o for o in new if o.type == "MESH"]
+        for o in meshes:                                    # bake each tile's placement into it
+            mw = o.matrix_world.copy()
+            o.parent = None
+            o.data.transform(mw)
+            o.matrix_world.identity()
+        for o in new:
+            if o.type != "MESH":
+                bpy.data.objects.remove(o, do_unlink=True)
+        return meshes
+
+    near = load(info["files"])
+    if not near:
         return None
-    for o in meshes:                                        # bake each tile's placement into it
-        mw = o.matrix_world.copy()
-        o.parent = None
-        o.data.transform(mw)
-        o.matrix_world.identity()
-    for o in new:
-        if o.type != "MESH":
-            bpy.data.objects.remove(o, do_unlink=True)
+    far = load(info.get("far_files", []))
 
     kx0, ky0, kx1, ky1 = keep_out
+
+    def from_site(x: float, y: float) -> float:
+        return math.hypot(max(kx0 - x, x - kx1, 0.0), max(ky0 - y, y - ky1, 0.0))
+
     # The ground level around the site: low points in a ring 8 to 45 m outside it.
-    ring = []
-    for o in meshes:
-        for v in o.data.vertices:
-            x, y, z = v.co
-            dx = max(kx0 - x, x - kx1, 0.0)
-            dy = max(ky0 - y, y - ky1, 0.0)
-            if 8.0 <= math.hypot(dx, dy) <= 45.0:
-                ring.append(z)
+    ring = [v.co.z for o in near for v in o.data.vertices if 8.0 <= from_site(v.co.x, v.co.y) <= 45.0]
     level = float(np.percentile(ring, 12)) if ring else 0.0
 
-    r = g.radius
-    for o in meshes:
-        bm = bmesh.new()
-        bm.from_mesh(o.data)
-        gone = []
-        for f in bm.faces:
-            c = f.calc_center_median()
-            if (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1) or math.hypot(c.x, c.y) > r:
-                gone.append(f)
-        bmesh.ops.delete(bm, geom=gone, context="FACES")
-        bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, -level - 0.05))
-        bm.to_mesh(o.data)
-        bm.free()
-        o.name = "google_" + o.name
-        # photogrammetry carries its own daylight: no shine, a little of its colour as light
-        for slot in o.material_slots:
-            mat = slot.material
-            if mat and mat.use_nodes:
-                for node in mat.node_tree.nodes:
-                    if node.type == "BSDF_PRINCIPLED":
-                        node.inputs["Roughness"].default_value = 1.0
-                        if "Specular IOR Level" in node.inputs:
-                            node.inputs["Specular IOR Level"].default_value = 0.1
-                        base = node.inputs["Base Color"]
-                        if base.links and "Emission Color" in node.inputs:
-                            mat.node_tree.links.new(base.links[0].from_socket, node.inputs["Emission Color"])
-                            node.inputs["Emission Strength"].default_value = 0.12
-    return level
+    def graded(x: float, y: float, z: float) -> float:
+        """z (already lowered) with the grading round the site and along the access road."""
+        w = 0.0
+        if abs(z) < 4.0:                                    # ground, not roofs
+            d = from_site(x, y)
+            w = 1.0 - smooth01(d / 12.0)
+        if access is not None:
+            (gx, gy), (nx, ny) = access
+            along = (x - gx) * nx + (y - gy) * ny
+            across = abs(-(x - gx) * ny + (y - gy) * nx)
+            if -2.0 <= along <= 70.0:
+                wa = 1.0 - smooth01((across - 5.0) / 7.0) if across > 5.0 else 1.0
+                wa *= 1.0 - smooth01((along - 60.0) / 10.0) if along > 60.0 else 1.0
+                w = max(w, wa)
+        return z * (1.0 - w)
+
+    inner = float(info.get("radius", g.radius))
+    outer = float(info.get("horizon", inner))
+    lowest = math.inf
+    for group, keep in ((near, lambda c: math.hypot(c.x, c.y) <= inner),
+                        (far, lambda c: inner < math.hypot(c.x, c.y) <= outer)):
+        for o in group:
+            bm = bmesh.new()
+            bm.from_mesh(o.data)
+            gone = [f for f in bm.faces
+                    if not keep(c := f.calc_center_median()) or (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1)]
+            bmesh.ops.delete(bm, geom=gone, context="FACES")
+            for v in bm.verts:
+                x, y, z = v.co
+                v.co.z = graded(x, y, z - level - 0.05)
+                lowest = min(lowest, v.co.z)
+            bm.to_mesh(o.data)
+            bm.free()
+            o.name = "google_" + o.name
+            # photogrammetry carries its own daylight: no shine, a little of its colour as light
+            for slot in o.material_slots:
+                mat = slot.material
+                if mat and mat.use_nodes:
+                    for node in mat.node_tree.nodes:
+                        if node.type == "BSDF_PRINCIPLED":
+                            node.inputs["Roughness"].default_value = 1.0
+                            if "Specular IOR Level" in node.inputs:
+                                node.inputs["Specular IOR Level"].default_value = 0.1
+                            base = node.inputs["Base Color"]
+                            if base.links and "Emission Color" in node.inputs:
+                                mat.node_tree.links.new(base.links[0].from_socket, node.inputs["Emission Color"])
+                                node.inputs["Emission Strength"].default_value = 0.12
+    return level, (lowest if lowest < math.inf else 0.0)
+
+
+def smooth01(t: float) -> float:
+    t = min(1.0, max(0.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def build_base(g: Ground, z: float, horizon: float):
+    """Under Google's mesh: plain ground far below it (so it never shows through where the
+    mesh dips), and soil walls round the site pad down to it, so no gap under the cut shows."""
+    s = max(horizon, g.radius) * 6
+    if g.has_sea:                                         # beyond Google's ring the sea goes on
+        zs = g.sea_level - 1.0
+        _mesh("skirt", [(-s, -s, zs), (s, -s, zs), (s, s, zs), (-s, s, zs)], [(0, 1, 2, 3)], M.get("water"))
+        z = min(z, zs - 0.5)
+    else:
+        _mesh("skirt", [(-s, -s, z), (s, -s, z), (s, s, z), (-s, s, z)], [(0, 1, 2, 3)], M.get("ground"))
+    x0, y0, x1, y1 = g.site
+    e = 2 * g.radius / (g.n - 1) + 4.0
+    X0, Y0, X1, Y1 = x0 - e, y0 - e, x1 + e, y1 + e
+    top = 0.0
+    v = [(X0, Y0, top), (X1, Y0, top), (X1, Y1, top), (X0, Y1, top),
+         (X0, Y0, z), (X1, Y0, z), (X1, Y1, z), (X0, Y1, z)]
+    _mesh("site_walls", v, [(0, 1, 5, 4), (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)], M.get("soil"))
 
 
 def build_neighbours(g: Ground, manifest: dict[str, Any], folder: Path, keep_out: tuple[float, float, float, float]):
@@ -914,11 +969,15 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     gate_side = max(probe, key=lambda k: (g.at(*probe[k]) if not g.has_sea else g.at(*probe[k]) - g.sea_level))
 
     has_google = bool(manifest.get("google"))
-    build_terrain(g, manifest, env_folder, sink=1.5 if has_google else 0.0)
-    pts = build_site(g, pit, pit_depth, gate_side)
-    keep_out = (site[0] - 5, site[1] - 5, site[2] + 5, site[3] + 5)
-    google_level = build_google(g, manifest, env_folder, keep_out) if has_google else None
-    if google_level is None:
+    pts = build_site(g, pit, pit_depth, gate_side, graded_track=has_google)
+    keep_out = (site[0] - 2, site[1] - 2, site[2] + 2, site[3] + 2)
+    got = build_google(g, manifest, env_folder, keep_out, (pts["gate"], pts["out"])) if has_google else None
+    google_level = got[0] if got else None
+    if got:
+        # Google's mesh is the ground: no terrain under it to poke through where it dips
+        build_base(g, min(-3.0, got[1] - 3.0), float(manifest["google"].get("horizon", g.radius)))
+    else:
+        build_terrain(g, manifest, env_folder)
         build_neighbours(g, manifest, env_folder, keep_out)
     # the floor each step's crew stands on
     for st in tl.steps:

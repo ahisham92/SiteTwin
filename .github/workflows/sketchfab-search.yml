@@ -1,0 +1,13 @@
+name: Find free 3D models
+
+# Lists free-licence downloadable Sketchfab models for each kind of site equipment.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python tools/sketchfab_search.py
