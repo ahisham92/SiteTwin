@@ -31,7 +31,7 @@ jobs:
           LAT: ${{ inputs.lat || '' }}
           LON: ${{ inputs.lon || '' }}
         run: |
-          python tools/google_probe.py 25.1972 55.2744 | sed "s/$SITETWIN_GOOGLE_KEY/…/g"
+          PYTHONPATH=. python tools/google_probe.py 25.1972 55.2744 | sed "s/$SITETWIN_GOOGLE_KEY/…/g"
           python - <<'PY'
           import os, tempfile, time
           from pathlib import Path
