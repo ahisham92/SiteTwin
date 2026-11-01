@@ -200,9 +200,14 @@ class Summary:
     counts: dict[str, int] = field(default_factory=dict)
     storeys: list[dict[str, Any]] = field(default_factory=list)
     sequence: list[dict[str, Any]] = field(default_factory=list)
+    #: Each step's elements by their STEP id (#123), parts of an assembly with it. Kept out of
+    #: as_dict: a big model has tens of thousands, and only the 3D preview wants them.
+    step_ids: dict[int, list[int]] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
-        return self.__dict__.copy()
+        out = self.__dict__.copy()
+        out.pop("step_ids", None)
+        return out
 
 
 def summarise(text: str) -> Summary:
@@ -241,21 +246,37 @@ def summarise(text: str) -> Summary:
         v = e.args[9] if len(e.args) > 9 else None
         return float(v) if isinstance(v, (int, float)) else 0.0
 
+    # A stair, roof or curtain wall is an assembly: its flights, slabs and panels are its parts,
+    # held by an IfcRelAggregates rather than by the storey. They go up with it.
+    parts: dict[int, list[int]] = {}
+    for rel in by_type.get("IFCRELAGGREGATES", []):
+        whole = rel.args[4] if len(rel.args) > 4 else None
+        if isinstance(whole, Ref) and isinstance(rel.args[5] if len(rel.args) > 5 else None, list):
+            parts.setdefault(whole.id, []).extend(r.id for r in rel.args[5] if isinstance(r, Ref))
+
+    def with_parts(eid: int) -> list[int]:
+        out_ids, todo = [], [eid]
+        while todo:
+            i = todo.pop()
+            out_ids.append(i)
+            todo.extend(parts.get(i, []))
+        return out_ids
+
     order = [name for name, _ in PHASES] + ["Other"]
     step = 0
     for storey in sorted(storeys, key=level):
         name = storey.args[2] if isinstance(storey.args[2], str) else f"#{storey.id}"
         inside = holds[storey.id]
         out.storeys.append({"name": name, "elevation": level(storey), "elements": len(inside)})
-        phases: dict[str, int] = {}
+        phases: dict[str, list[Entity]] = {}
         for e in inside:
-            phase = PHASE_OF.get(e.type, "Other")
-            phases[phase] = phases.get(phase, 0) + 1
+            phases.setdefault(PHASE_OF.get(e.type, "Other"), []).append(e)
         for phase in order:
             if phases.get(phase):
                 step += 1
                 out.sequence.append({"step": step, "storey": name, "phase": phase,
-                                     "elements": phases[phase]})
+                                     "elements": len(phases[phase])})
+                out.step_ids[step] = [i for e in phases[phase] for i in with_parts(e.id)]
     return out
 
 

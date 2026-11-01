@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import modal
+import modal.exception
 
 GPU = os.environ.get("SITETWIN_GPU", "L4")
 MAX_GPUS = int(os.environ.get("SITETWIN_MAX_GPUS", "10"))
@@ -35,6 +36,9 @@ PRICE_PER_HOUR = {"T4": 0.59, "L4": 0.80, "A10G": 1.10, "L40S": 1.95, "A100": 2.
 app = modal.App("sitetwin")
 work = modal.Volume.from_name("sitetwin-work", create_if_missing=True)
 secret = modal.Secret.from_name("sitetwin")
+#: How many frames each run of a job has rendered, "<job>:<first frame>" -> count, so the job's
+#: handler can tell the site how far the whole film is while the GPUs work.
+frames_done = modal.Dict.from_name("sitetwin-frames", create_if_missing=True)
 
 render_image = (
     modal.Image.debian_slim(python_version="3.13")
@@ -57,14 +61,23 @@ def _site():
 
 
 @app.function(image=render_image, gpu=GPU, volumes={"/work": work}, timeout=12 * 3600, secrets=[secret])
-def render_chunk(job_dir: str, args: dict, first: int, last: int) -> dict:
+def render_chunk(job_dir: str, args: dict, first: int, last: int, jid: int = 0) -> dict:
     from sitetwin_worker.render import run
+    from sitetwin_worker.serve import Reporter
 
     work.reload()
     t = time.time()
     folder = Path(job_dir)
+    rep = Reporter(_site(), jid, preview_every=45.0)
+    key = f"{jid}:{first}"
+
+    def frame(done: int, total: int, path: Path) -> None:
+        if done == 1 or done % 5 == 0 or done == total:
+            frames_done[key] = done
+        rep.preview(path)
+
     res = run(folder / "model.ifc", folder, args["lat"], args["lon"], seconds=args["seconds"],
-              quality=args["quality"], title=args["title"], chunk=(first, last))
+              quality=args["quality"], title=args["title"], chunk=(first, last), on_frame=frame)
     work.commit()
     return {"segment": res["segment"], "seconds": time.time() - t, "first": first}
 
@@ -75,52 +88,76 @@ def handle_job(got: dict) -> None:
     import traceback
 
     from sitetwin_worker.render import chunks, join, run
-    from sitetwin_worker.serve import mount_prefix
+    from sitetwin_worker.serve import Reporter, Stopped, mount_prefix
 
     site = _site()
     job, project = got["job"], got["project"]
     jid = job["id"]
     folder = Path(f"/work/job_{jid}")
     folder.mkdir(parents=True, exist_ok=True)
-
-    def progress(pct: float, msg: str) -> None:
-        try:
-            site.json("POST", f"/api/worker/jobs/{jid}/progress", {"percent": pct, "message": msg})
-        except Exception:                                  # noqa: BLE001 - progress is best effort
-            pass
+    rep = Reporter(site, jid)
+    calls: list = []
 
     try:
-        progress(2, "Fetching the model and the surroundings")
+        rep.stage("starting")
         site.download(mount_prefix(site.base) + got["model_url"], folder / "model.ifc")
         args = {"lat": project["latitude"], "lon": project["longitude"], "seconds": job["seconds"],
                 "quality": job["quality"], "title": project["name"]}
         prep = run(folder / "model.ifc", folder, args["lat"], args["lon"], seconds=args["seconds"],
-                   quality=args["quality"], title=args["title"], prepare_only=True)
+                   quality=args["quality"], title=args["title"], prepare_only=True, on_stage=rep.stage)
         work.commit()
         runs = chunks(prep["frames"], prep["fps"], MAX_GPUS)
-        progress(8, f"Rendering {prep['frames']} frames on {len(runs)} {GPU} GPU{'s' if len(runs) > 1 else ''}")
-        done, gpu_seconds, segments = 0, 0.0, {}
-        for r in render_chunk.starmap([(str(folder), args, a, b) for a, b in runs], order_outputs=False):
-            done += 1
-            gpu_seconds += r["seconds"]
-            segments[r["first"]] = r["segment"]
-            progress(8 + 88 * done / len(runs), f"{done} of {len(runs)} parts rendered")
+        total = prep["frames"]
+        rep.frames(0, total, len(runs), 0.0, force=True)
+        started = time.time()
+        calls = [(a, render_chunk.spawn(str(folder), args, a, b, jid)) for a, b in runs]
+        results: dict[int, dict] = {}
+        while len(results) < len(calls):
+            for first, call in calls:
+                if first in results:
+                    continue
+                try:
+                    results[first] = call.get(timeout=0)
+                except (TimeoutError, modal.exception.TimeoutError):
+                    pass
+            done = sum(b - a + 1 for a, b in runs if a in results) + \
+                sum(int(frames_done.get(f"{jid}:{a}", 0)) for a, b in runs if a not in results)
+            gpu_seconds = sum(r["seconds"] for r in results.values()) + \
+                (time.time() - started) * (len(calls) - len(results))
+            rep.frames(min(done, total), total, len(runs), gpu_seconds / 3600 * PRICE_PER_HOUR.get(GPU, 1.0))
+            if len(results) < len(calls):
+                time.sleep(5)
+        gpu_seconds = sum(r["seconds"] for r in results.values())
+        rep.stage("joining")
         work.reload()
         video = folder / "film.mp4"
-        join([Path(segments[k]) for k in sorted(segments)], video)
+        join([Path(results[k]["segment"]) for k in sorted(results)], video)
         cost = gpu_seconds / 3600 * PRICE_PER_HOUR.get(GPU, 1.0)
         missing = prep["manifest"].get("missing", {})
         note = f"{gpu_seconds / 3600:.1f} GPU-hours on {GPU}, about ${cost:.2f}."
+        if prep["manifest"].get("google"):
+            note += " Surroundings: Google photo-real 3D."
         if missing:
             note += " Without " + ", ".join(missing) + " (could not be fetched)."
+        rep.send(99, "Sending the film to the site", stage="uploading", cost=cost)
         site.upload(f"/api/worker/jobs/{jid}/video", "video", video, {"message": note})
+    except Stopped:
+        for _, call in calls:
+            call.cancel()
     except Exception as exc:                               # noqa: BLE001 - reported to the site
         traceback.print_exc()
+        for _, call in calls:
+            call.cancel()
         try:
             site.json("POST", f"/api/worker/jobs/{jid}/failed", {"message": f"{type(exc).__name__}: {exc}"[:900]})
         except Exception:                                  # noqa: BLE001
             pass
     finally:
+        for a, _ in calls:
+            try:
+                frames_done.pop(f"{jid}:{a}")
+            except Exception:                              # noqa: BLE001 - never written
+                pass
         shutil.rmtree(folder, ignore_errors=True)
         work.commit()
 

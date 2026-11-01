@@ -38,9 +38,11 @@ def test_a_project_takes_a_model_and_its_location(app):
     p = c.get(f"/api/projects/{pid}").json
     assert p["project"]["location_from"] == "ifc"
     assert p["project"]["latitude"] == pytest.approx(33.6979167, abs=1e-6)
-    assert p["stages"]["model"] == "done" and p["stages"]["sequence"] == "draft"
+    assert p["stages"]["model"] == "done" and p["stages"]["sequence"] == "done"
     page = c.get(f"/projects/{pid}").get_data(as_text=True)
-    assert "Draft sequence" in page and "Foundations" in page
+    assert "The build sequence" in page and "Foundations" in page
+    steps = c.get(f"/projects/{pid}/steps.json").json
+    assert steps["steps"] and all(steps["ids"][str(s["step"])] for s in steps["steps"])
 
 
 def test_a_typed_location_is_not_overwritten_by_the_next_model(app):
@@ -82,7 +84,7 @@ def test_a_video_is_queued_picked_up_and_delivered(app, monkeypatch):
     c = client(app)
     pid = project_with_model(c)
     assert c.post(f"/projects/{pid}/render", data={"quality": "preview", "seconds": "30"}).status_code == 302
-    assert c.get(f"/api/projects/{pid}").json["stages"]["video"] == "queued"
+    assert c.get(f"/api/projects/{pid}").json["stages"]["video"] == "active"
     # a second request while one is waiting is refused
     assert c.post(f"/projects/{pid}/render", data={"quality": "preview"}).status_code == 409
 
@@ -94,15 +96,22 @@ def test_a_video_is_queued_picked_up_and_delivered(app, monkeypatch):
     assert w.post("/api/worker/next", headers=auth).json["job"] is None      # nothing else waiting
     ifc = w.get(got["model_url"], headers=auth)
     assert ifc.status_code == 200 and ifc.data.startswith(b"ISO-10303-21")
-    w.post(f"/api/worker/jobs/{jid}/progress", headers=auth, json={"percent": 40, "message": "frame 300"})
-    assert c.get(f"/api/projects/{pid}").json["job"]["percent"] == 40
+    w.post(f"/api/worker/jobs/{jid}/progress", headers=auth, json={"percent": 40, "message": "frame 300",
+                                                                       "stage": "frames", "frames_done": 300,
+                                                                       "frames_total": 720, "gpus": 2})
+    live = c.get(f"/projects/{pid}/state.json").json["job"]
+    assert live["percent"] == 40 and live["stage"] == "frames" and live["frames_done"] == 300
+    assert live["left"] is not None and live["estimate"]["frames"] == 720
+    w.post(f"/api/worker/jobs/{jid}/preview", headers=auth,
+           data={"frame": (io.BytesIO(b"\xff\xd8\xff"), "f.jpg")}, content_type="multipart/form-data")
+    assert c.get(c.get(f"/projects/{pid}/state.json").json["job"]["preview_url"]).status_code == 200
     done = w.post(f"/api/worker/jobs/{jid}/video", headers=auth,
                   data={"video": (io.BytesIO(b"\x00\x00\x00\x18ftypmp42"), "film.mp4")},
                   content_type="multipart/form-data")
     assert done.status_code == 200 and done.json["job"]["status"] == "done"
     assert c.get(f"/api/projects/{pid}").json["stages"]["video"] == "done"
     page = c.get(f"/projects/{pid}").get_data(as_text=True)
-    assert "<video" in page
+    assert "<video" in page and f"/projects/{pid}/video/{jid}.mp4" in page
     assert c.get(f"/projects/{pid}/video/{jid}.mp4").status_code == 200
     # another account cannot fetch it
     assert client(app, "8").get(f"/projects/{pid}/video/{jid}.mp4").status_code == 404
@@ -133,3 +142,33 @@ def test_no_video_without_a_model(app):
     c = client(app)
     pid = int(c.post("/projects", data={"name": "X"}).headers["Location"].split("/")[-1])
     assert c.post(f"/projects/{pid}/render", data={"quality": "draft"}).status_code == 400
+
+
+def test_pages_answer_as_json_for_the_live_page(app):
+    c = client(app)
+    pid = project_with_model(c)
+    h = {"Accept": "application/json"}
+    moved = c.post(f"/projects/{pid}/location", json={"latitude": 33.9, "longitude": 35.5}, headers=h)
+    assert moved.status_code == 200 and moved.json["project"]["location_from"] == "typed"
+    bad = c.post(f"/projects/{pid}/location", json={"latitude": "x"}, headers=h)
+    assert bad.status_code == 400 and "numbers" in bad.json["error"]
+    asked = c.post(f"/projects/{pid}/render", data={"quality": "draft", "seconds": "60"}, headers=h)
+    assert asked.status_code == 200 and asked.json["job"]["status"] == "queued"
+    jid = asked.json["job"]["id"]
+    stopped = c.post(f"/projects/{pid}/jobs/{jid}/cancel", headers=h)
+    assert stopped.json["job"]["status"] == "failed" and stopped.json["stages"]["video"] == "failed"
+
+
+def test_the_estimate_grows_with_length_and_quality(app):
+    from sitetwin_app.app import estimate
+    short, long_ = estimate("draft", 30), estimate("draft", 300)
+    assert long_["frames"] == 9000 and long_["cost"] > short["cost"] and long_["gpus"] >= short["gpus"]
+    assert estimate("4k", 90)["cost"] > estimate("preview", 90)["cost"]
+
+
+def test_the_render_machine_checking_in_is_shown(app, monkeypatch):
+    monkeypatch.setenv("SITETWIN_WORKER_TOKEN", "s3cret")
+    c = client(app)
+    assert "Waiting" in c.get("/").get_data(as_text=True)
+    app.test_client().post("/api/worker/next", headers={"Authorization": "Bearer s3cret"})
+    assert "Checked in" in c.get("/").get_data(as_text=True)

@@ -41,9 +41,21 @@ CREATE TABLE IF NOT EXISTS jobs (
     finished    REAL,
     video       TEXT
 );
+CREATE TABLE IF NOT EXISTS seen (
+    name        TEXT PRIMARY KEY,  -- 'worker': the last time a render machine asked for work
+    at          REAL NOT NULL,
+    detail      TEXT
+);
 """
 
 QUALITIES = ("preview", "draft", "final", "4k")
+#: Columns added after the first release, added to an older database when it is opened.
+LATER_COLUMNS = {
+    "jobs": [("stage", "TEXT"), ("frames_done", "INTEGER"), ("frames_total", "INTEGER"),
+             ("gpus", "INTEGER"), ("updated", "REAL"), ("cost", "REAL"), ("preview", "TEXT")],
+}
+#: What a render goes through, in order, as the worker reports it.
+JOB_STAGES = ("queued", "starting", "surroundings", "scene", "frames", "joining", "uploading", "done")
 #: A job a worker took and has not reported on for this long is offered again.
 STALE_SECONDS = 30 * 60
 
@@ -64,6 +76,11 @@ class Store:
         self.folder.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.executescript(SCHEMA)
+            for table, cols in LATER_COLUMNS.items():
+                have = {r["name"] for r in db.execute(f"PRAGMA table_info({table})")}
+                for name, kind in cols:
+                    if name not in have:
+                        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
 
     def _db(self) -> sqlite3.Connection:
         db = sqlite3.connect(self.folder / "sitetwin.db")
@@ -101,6 +118,14 @@ class Store:
             cur = db.execute("INSERT INTO projects (owner, name, created) VALUES (?,?,?)",
                              (owner, name[:200], time.time()))
             pid = cur.lastrowid
+        return self.project(owner, pid)
+
+    def rename(self, owner: str, pid: int, name: str) -> dict[str, Any]:
+        self.project(owner, pid)
+        name = (name or "").strip()
+        if not name:
+            raise StoreError(400, "Give the project a name.")
+        self._update(pid, {"name": name[:200]})
         return self.project(owner, pid)
 
     def set_model(self, owner: str, pid: int, filename: str, summary: dict[str, Any]) -> dict[str, Any]:
@@ -146,8 +171,8 @@ class Store:
                               (pid,)).fetchone()
             if busy:
                 raise StoreError(409, "A video of this project is already being made.")
-            cur = db.execute("INSERT INTO jobs (project_id, owner, quality, seconds, status, created) "
-                             "VALUES (?,?,?,?,'queued',?)", (pid, owner, quality, seconds, time.time()))
+            cur = db.execute("INSERT INTO jobs (project_id, owner, quality, seconds, status, stage, created) "
+                             "VALUES (?,?,?,?,'queued','queued',?)", (pid, owner, quality, seconds, time.time()))
             jid = cur.lastrowid
         return self.job(jid)
 
@@ -170,25 +195,60 @@ class Store:
         with self._db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute(
-                "SELECT * FROM jobs WHERE status='queued' OR (status='running' AND started < ?) "
+                "SELECT * FROM jobs WHERE status='queued' OR (status='running' AND COALESCE(updated, started) < ?) "
                 "ORDER BY id LIMIT 1", (now - STALE_SECONDS,)).fetchone()
             if row is None:
                 return None
-            db.execute("UPDATE jobs SET status='running', worker=?, started=?, percent=0, message=? WHERE id=?",
-                       (worker[:100], now, "Picked up", row["id"]))
+            db.execute("UPDATE jobs SET status='running', worker=?, started=?, updated=?, percent=0, message=?, "
+                       "stage='starting', frames_done=0 WHERE id=?",
+                       (worker[:100], now, now, "Picked up by the render machine", row["id"]))
         return self.job(row["id"])
 
-    def progress(self, jid: int, percent: float, message: str) -> None:
+    def progress(self, jid: int, percent: float, message: str, **more: Any) -> None:
+        """What the worker says it is doing. ``more`` may carry stage, frames_done, frames_total, gpus, cost."""
+        fields: dict[str, Any] = {"percent": max(0.0, min(100.0, float(percent))),
+                                  "message": (message or "")[:300], "updated": time.time()}
+        if more.get("stage") in JOB_STAGES:
+            fields["stage"] = more["stage"]
+        for key in ("frames_done", "frames_total", "gpus"):
+            if more.get(key) is not None:
+                fields[key] = int(more[key])
+        if more.get("cost") is not None:
+            fields["cost"] = float(more["cost"])
+        cols = ", ".join(f"{k}=?" for k in fields)
         with self._db() as db:
-            db.execute("UPDATE jobs SET percent=?, message=?, started=? WHERE id=? AND status='running'",
-                       (max(0.0, min(100.0, float(percent))), (message or "")[:300], time.time(), jid))
+            db.execute(f"UPDATE jobs SET {cols} WHERE id=? AND status='running'", (*fields.values(), jid))
+
+    def set_preview(self, jid: int, name: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE jobs SET preview=?, updated=? WHERE id=?", (name, time.time(), jid))
 
     def finish(self, jid: int, video: str | None, message: str = "") -> dict[str, Any]:
         status = "done" if video else "failed"
         with self._db() as db:
-            db.execute("UPDATE jobs SET status=?, video=?, message=?, finished=?, percent=? WHERE id=?",
-                       (status, video, (message or "")[:1000], time.time(), 100.0 if video else 0.0, jid))
+            db.execute("UPDATE jobs SET status=?, video=?, message=?, finished=?, updated=?, percent=?, stage=? "
+                       "WHERE id=?", (status, video, (message or "")[:1000], time.time(), time.time(),
+                                      100.0 if video else 0.0, "done" if video else None, jid))
         return self.job(jid)
+
+    def cancel(self, owner: str, pid: int, jid: int) -> dict[str, Any]:
+        job = self.job(jid)
+        if job["project_id"] != pid or job["owner"] != owner:
+            raise StoreError(404, "There is no such job.")
+        if job["status"] not in ("queued", "running"):
+            raise StoreError(409, "That video is not being made.")
+        return self.finish(jid, None, "Stopped by you.")
+
+    def saw(self, name: str, detail: str = "") -> None:
+        with self._db() as db:
+            db.execute("INSERT INTO seen (name, at, detail) VALUES (?,?,?) "
+                       "ON CONFLICT(name) DO UPDATE SET at=excluded.at, detail=excluded.detail",
+                       (name, time.time(), detail[:200]))
+
+    def last_seen(self, name: str) -> dict[str, Any] | None:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM seen WHERE name=?", (name,)).fetchone()
+        return dict(row) if row else None
 
     def _update(self, pid: int, fields: dict[str, Any]) -> None:
         cols = ", ".join(f"{k}=?" for k in fields)

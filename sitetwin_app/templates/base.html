@@ -1,16 +1,44 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}SiteTwin{% endblock %}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='sitetwin.css') }}">
+  {% block head %}{% endblock %}
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232a78d6'/><text x='16' y='22' font-family='system-ui' font-size='11' font-weight='700' fill='white' text-anchor='middle'>AHM</text></svg>">
+  <script>
+    // Same theme switch and storage key as the rest of the site, applied before first paint.
+    document.documentElement.classList.replace('no-js', 'js');
+    try { var t = localStorage.getItem('pm-theme'); if (t && t !== 'system') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+  </script>
 </head>
 <body>
-  <header class="bar">
-    <a class="brand" href="{{ url_for('home') }}">SiteTwin<span>Construction sequence</span></a>
-    {% if who %}<span class="who">{{ who['name'] }}</span>{% endif %}
+  <header class="topbar">
+    <div class="wrap">
+      <div class="topbar-inner">
+        <a class="brand" href="{{ (site_root or '') ~ '/' }}" title="Home: every app" aria-label="AHM, home">
+          <span class="brand-mark brand-mark-word">AHM</span>
+        </a>
+        <a class="app-name" href="{{ url_for('home') }}">SiteTwin</a>
+        <div class="spacer"></div>
+        <button type="button" class="btn btn-ghost btn-sm" data-theme-toggle aria-label="Switch theme">Auto</button>
+        {% if who %}
+          <div class="whoami small">
+            <div>{{ who['name'] }}</div>
+            {% if who.get('login') %}<div class="muted">{{ who['login'] }}</div>{% endif %}
+          </div>
+        {% endif %}
+      </div>
+    </div>
   </header>
-  <main>{% block content %}{% endblock %}</main>
+  <main>
+    <div class="wrap">
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+  <div class="toast hidden" role="status" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='sitetwin.js') }}"></script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>
