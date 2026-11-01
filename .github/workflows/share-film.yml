@@ -1,0 +1,42 @@
+name: Keep a sample film in the repository
+
+# Copies the film from a "Render a sample film" run onto the sample-films branch, with
+# stills from it, so it can be fetched with git and shown without the Actions page.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id: {description: "Run id of the render", required: true}
+  workflow_run:
+    workflows: ["Render a sample film"]
+    types: [completed]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  keep:
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sitetwin-sample-film
+          run-id: ${{ inputs.run_id || github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Commit it to sample-films
+        env:
+          RUN: ${{ inputs.run_id || github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sudo apt-get -qq install -y ffmpeg > /dev/null
+          mkdir out && mv film.mp4 "out/film-$RUN.mp4"
+          for t in 5 15 25 35 45 55; do ffmpeg -loglevel error -ss $t -i "out/film-$RUN.mp4" -frames:v 1 -vf scale=960:-1 "out/still-$RUN-$t.jpg" || true; done
+          cd out
+          git init -q -b sample-films
+          git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
+          git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
+          git fetch -q origin sample-films && git reset -q --soft FETCH_HEAD || true
+          git add . && git commit -qm "Sample film from run $RUN" && git push -q origin HEAD:sample-films
