@@ -145,7 +145,8 @@ def get(name: str):
         bsdf.inputs["Base Color"].default_value = (0.92, 0.92, 0.9, 1)
         bsdf.inputs["Roughness"].default_value = 0.3
     elif name == "hoarding":
-        _noise_mix(tree, bsdf, (0.10, 0.25, 0.45), (0.12, 0.28, 0.50), scale=4, rough=(0.4, 0.6), bump=0.02)
+        # painted steel site hoarding, dark green and weathered (not a toy blue)
+        _noise_mix(tree, bsdf, (0.07, 0.13, 0.10), (0.13, 0.19, 0.15), scale=2.5, rough=(0.55, 0.8), bump=0.08)
     elif name == "cabin":
         _noise_mix(tree, bsdf, (0.85, 0.85, 0.82), (0.92, 0.92, 0.9), scale=4, rough=(0.4, 0.6), bump=0.03)
     elif name == "formwork":

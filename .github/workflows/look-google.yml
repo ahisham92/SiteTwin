@@ -4,8 +4,6 @@ name: Look at Google 3D tiles
 # can be seen. The pictures go to the diagnostics branch. The key is never printed.
 
 on:
-  push:
-    branches: [claude/google-fill]
   workflow_dispatch:
     inputs:
       lat: {description: "Latitude", default: "33.8938"}

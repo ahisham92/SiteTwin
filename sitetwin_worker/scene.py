@@ -410,7 +410,12 @@ def build_base(g: Ground, z: float, horizon: float):
     """Under Google's mesh: plain ground far below it (so it never shows through where the
     mesh dips), and soil walls round the site pad down to it, so no gap under the cut shows."""
     s = max(horizon, g.radius) * 6
-    _mesh("skirt", [(-s, -s, z), (s, -s, z), (s, s, z), (-s, s, z)], [(0, 1, 2, 3)], M.get("ground"))
+    if g.has_sea:                                         # beyond Google's ring the sea goes on
+        zs = g.sea_level - 1.0
+        _mesh("skirt", [(-s, -s, zs), (s, -s, zs), (s, s, zs), (-s, s, zs)], [(0, 1, 2, 3)], M.get("water"))
+        z = min(z, zs - 0.5)
+    else:
+        _mesh("skirt", [(-s, -s, z), (s, -s, z), (s, s, z), (-s, s, z)], [(0, 1, 2, 3)], M.get("ground"))
     x0, y0, x1, y1 = g.site
     e = 2 * g.radius / (g.n - 1) + 4.0
     X0, Y0, X1, Y1 = x0 - e, y0 - e, x1 + e, y1 + e
