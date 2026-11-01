@@ -102,3 +102,29 @@ def test_google_tiles_are_placed_cut_round_the_site_and_set_on_its_ground(tmp_pa
             assert np.hypot(c.x, c.y) <= 181                      # and nothing beyond the horizon
             if o.name.startswith("google_far") or "far" in o.name:
                 assert np.hypot(c.x, c.y) > 120                   # the ring starts where the circle ends
+
+
+def test_a_real_model_is_stood_on_the_ground_scaled_and_shared_between_copies(tmp_path):
+    from sitetwin_worker import equipment as E
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    E._library.clear()
+    # a 2 x 1 x 1 box floating off-centre, in glTF's y-up axes
+    pts = np.array([(x, y, z) for x in (5, 7) for y in (3, 4) for z in (-1, 0)], float)
+    faces = [(0, 1, 3), (0, 3, 2), (4, 6, 7), (4, 7, 5), (0, 4, 5), (0, 5, 1),
+             (2, 3, 7), (2, 7, 6), (0, 2, 6), (0, 6, 4), (1, 5, 7), (1, 7, 3)]
+    path = tmp_path / "mixer.glb"
+    path.write_bytes(_glb_mesh(pts, faces))
+    E.MODELS.clear()
+    E.MODELS["mixer_truck"] = str(path)
+    try:
+        a, b = E.mixer_truck(), E.mixer_truck()
+        parts = [c for c in a.children if c.type == "MESH"]
+        assert parts and parts[0].data is [c for c in b.children if c.type == "MESH"][0].data
+        co = np.array([v.co[:] for v in parts[0].data.vertices])
+        lo, hi = co.min(0), co.max(0)
+        assert max(hi[0] - lo[0], hi[1] - lo[1]) == pytest.approx(9.0, abs=0.01)   # a real mixer's length
+        assert lo[2] == pytest.approx(0.0, abs=1e-4)                              # on the ground
+        assert abs(lo[0] + hi[0]) < 1e-3 and abs(lo[1] + hi[1]) < 1e-3            # centred
+    finally:
+        E.MODELS.clear()
+        E._library.clear()

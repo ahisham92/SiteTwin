@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -113,6 +114,14 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     manifest = environment.gather(lat, lon, radius, out / "environment")
     for k, why in manifest.get("missing", {}).items():
         log(f"  no {k}: {why}")
+    from . import assets, equipment
+    cache = Path(os.environ.get("SITETWIN_ASSET_CACHE", str(out / "models")))
+    models, model_credits = assets.prepare(cache, log=log)
+    equipment.MODELS.clear()
+    equipment.MODELS.update(models)
+    if model_credits:
+        manifest = dict(manifest, credits=list(manifest.get("credits", [])) + ["Models (Sketchfab): " + "; ".join(model_credits)])
+        log(f"  real models: {', '.join(models)}")
 
     stage("scene")
     tl = sequence.plan(elements, seconds=seconds, fps=q["fps"])

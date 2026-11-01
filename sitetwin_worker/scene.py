@@ -951,6 +951,7 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     import bpy
     bpy.ops.wm.read_factory_settings(use_empty=True)
     M.reset()
+    E._library.clear()
     rng = random.Random(7)
 
     fp = footprint(elements)
