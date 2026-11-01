@@ -53,6 +53,22 @@ jobs:
           # pass the trimmed tokens on to the next steps
           echo "MODAL_TOKEN_ID=$(printf '%s' "$MODAL_TOKEN_ID" | tr -d '[:space:]')" >> "$GITHUB_ENV"
           echo "MODAL_TOKEN_SECRET=$(printf '%s' "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+      - name: Check the render machine can reach the site with this token
+        env:
+          SITE_URL: ${{ secrets.SITETWIN_SITE_URL }}
+          WORKER_TOKEN: ${{ secrets.SITETWIN_WORKER_TOKEN }}
+        run: |
+          base="${SITE_URL%/}"
+          echo "Site address ends with: ...${base: -12}"
+          css=$(curl -s -o /dev/null -w '%{http_code}' "$base/static/sitetwin.css")
+          echo "SiteTwin stylesheet at that address: HTTP $css (200 means the address is right)"
+          # job 0 never exists: 404 means the token was accepted, 401 means it was not
+          auth=$(curl -s -o /tmp/r.txt -w '%{http_code}' -X POST -H "Authorization: Bearer $WORKER_TOKEN" \
+                 -H 'Content-Type: application/json' -d '{}' "$base/api/worker/jobs/0/failed")
+          echo "Worker API with the token: HTTP $auth (404 = token accepted, 401 = token rejected)"
+          head -c 300 /tmp/r.txt; echo
+          [ "$css" = 200 ] || { echo "::error::SITETWIN_SITE_URL does not point at SiteTwin (it should end in /sitetwin)"; exit 1; }
+          [ "$auth" = 404 ] || { echo "::error::The site rejected SITETWIN_WORKER_TOKEN: it must match the site's exactly"; exit 1; }
       - name: Store the site's address and token on Modal
         run: |
           modal secret create sitetwin \
