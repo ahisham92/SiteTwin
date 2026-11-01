@@ -8,6 +8,8 @@ the manifest and the scene carries on without it:
 * **Aerial imagery**: any XYZ imagery service (Esri World Imagery by default;
   set ``SITETWIN_IMAGERY_URL`` for Mapbox, MapTiler, a national orthophoto...),
   cut into one picture laid exactly over that grid.
+* **Photo-real 3D** (optional): Google's Photorealistic 3D Tiles where Google has them
+  and ``SITETWIN_GOOGLE_KEY`` is set (see google3d.py); the buildings then come from it.
 * **What is built around it**: OpenStreetMap through the Overpass API:
   buildings with their heights or storeys, roads, railways, water and land use.
 
@@ -266,6 +268,15 @@ def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources
         manifest["credits"].append(sources.imagery_credit)
     except Exception as exc:                           # noqa: BLE001 - the scene goes on untextured
         manifest["missing"]["imagery"] = str(exc)
+
+    try:
+        from . import google3d
+        manifest["google"] = google3d.gather(lat, lon, radius, folder / "google", fetch)
+        manifest["credits"].insert(0, "3D surroundings: " + manifest["google"]["credit"])
+    except LookupError as exc:                         # no key, or Google has no 3D here
+        manifest["google_skipped"] = str(exc)
+    except Exception as exc:                           # noqa: BLE001 - the scene goes on without it
+        manifest["missing"]["google 3D"] = str(exc)
 
     try:
         feats = fetch_osm(local, radius, fetch, sources.overpass)
