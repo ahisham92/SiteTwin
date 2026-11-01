@@ -65,27 +65,82 @@ def _build(name: str, parts: Iterable[tuple], parent=None):
     return obj
 
 
-def _asset(kind: str, height: float):
+#: Real models to use in place of the built-in shapes: kind -> glTF file (see assets.py).
+MODELS: dict[str, str] = {}
+#: Each model's meshes once imported and stood up: kind -> [mesh data].
+_library: dict[str, list] = {}
+
+
+def _model_file(kind: str) -> Path | None:
+    if kind in MODELS and Path(MODELS[kind]).exists():
+        return Path(MODELS[kind])
     folder = os.environ.get("SITETWIN_ASSETS")
-    if not folder:
-        return None
-    path = Path(folder) / f"{kind}.glb"
-    if not path.exists():
-        return None
+    if folder and (Path(folder) / f"{kind}.glb").exists():
+        return Path(folder) / f"{kind}.glb"
+    return None
+
+
+def _load(kind: str, path: Path, height: float, yaw: float, length: float | None = None) -> list:
+    """Import the model once and stand it up: base on the ground, centred, front to +X,
+    ``height`` tall (or ``length`` long, the longer side in plan, when given). Returns its
+    meshes (shared by every copy in the scene)."""
     import bpy
+    import mathutils
     before = set(bpy.data.objects)
     bpy.ops.import_scene.gltf(filepath=str(path))
     new = [o for o in bpy.data.objects if o not in before]
+    meshes = []
+    for o in new:
+        if o.type == "MESH":
+            for m in list(o.modifiers):                       # a skinned model keeps its rest pose
+                o.modifiers.remove(m)
+            data = o.data.copy()
+            data.transform(o.matrix_world)
+            meshes.append(data)
+    for o in new:
+        bpy.data.objects.remove(o, do_unlink=True)
+    if not meshes:
+        return []
+    turn = mathutils.Matrix.Rotation(math.radians(yaw), 4, "Z")
+    for d in meshes:
+        d.transform(turn)
+    lo = [min(v.co[i] for d in meshes for v in d.vertices) for i in range(3)]
+    hi = [max(v.co[i] for d in meshes for v in d.vertices) for i in range(3)]
+    if length:
+        k = length / max(1e-6, hi[0] - lo[0], hi[1] - lo[1])
+    else:
+        k = height / max(1e-6, hi[2] - lo[2]) if height else 1.0
+    fit = mathutils.Matrix.Scale(k, 4) @ mathutils.Matrix.Translation(
+        (-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]))
+    for d in meshes:
+        d.transform(fit)
+        d.name = f"model_{kind}"
+    return meshes
+
+
+def _asset(kind: str, height: float):
+    """A copy of the real model of ``kind`` (sharing its meshes with the other copies), or None
+    when there is none and the built-in shape is used."""
+    path = _model_file(kind)
+    if path is None:
+        return None
+    import bpy
+    if kind not in _library:
+        try:
+            from .assets import CATALOG
+            entry = CATALOG.get(kind, {})
+            _library[kind] = _load(kind, path, float(entry.get("height", height)),
+                                   float(entry.get("yaw", 0.0)), entry.get("length"))
+        except Exception:                                     # noqa: BLE001 - the built-in shape stands in
+            _library[kind] = []
+    if not _library[kind]:
+        return None
     root = bpy.data.objects.new(kind, None)
     bpy.context.scene.collection.objects.link(root)
-    top = 0.0
-    for o in new:
-        if o.parent is None:
-            o.parent = root
-        for v in getattr(o, "bound_box", []):
-            top = max(top, (o.matrix_world @ __import__("mathutils").Vector(v)).z)
-    if top > 0 and height:
-        root.scale = (height / top,) * 3
+    for d in _library[kind]:
+        o = bpy.data.objects.new(f"{kind}_part", d)
+        bpy.context.scene.collection.objects.link(o)
+        o.parent = root
     return root
 
 

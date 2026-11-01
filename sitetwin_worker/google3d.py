@@ -290,7 +290,7 @@ def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
                 continue
             (far_files if got[0].startswith("far_") else files).append(got[0])
             for c in got[1].split(";"):
-                if c.strip():
+                if c.strip() and c.strip() != "Google":
                     credits.add(c.strip())
     if not files:
         raise LookupError("none of Google's tiles could be downloaded")

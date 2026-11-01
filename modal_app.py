@@ -45,7 +45,7 @@ render_image = (
     .apt_install("ffmpeg", "fonts-dejavu-core", "libxrender1", "libxxf86vm1", "libxfixes3", "libxi6",
                  "libxkbcommon0", "libsm6", "libgl1", "libegl1", "libgomp1")
     .pip_install("bpy==5.2.3", "ifcopenshell>=0.8", "numpy>=1.26", "pillow>=10", "flask>=3")
-    .env({"SITETWIN_GPU": GPU, "SITETWIN_MAX_GPUS": str(MAX_GPUS)})
+    .env({"SITETWIN_GPU": GPU, "SITETWIN_MAX_GPUS": str(MAX_GPUS), "SITETWIN_ASSET_CACHE": "/work/assets"})
     .add_local_python_source("sitetwin_app", "sitetwin_worker")
 )
 light_image = (

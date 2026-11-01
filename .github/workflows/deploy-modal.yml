@@ -6,7 +6,8 @@ name: Deploy renderer to Modal
 # the website, e.g. https://example.com/sitetwin) and SITETWIN_WORKER_TOKEN (any
 # long random string, also set on the website). Optional: SITETWIN_GOOGLE_KEY, a Google
 # Maps Platform key with the Map Tiles API on, for Google's photo-real 3D surroundings
-# where Google has them.
+# where Google has them; SITETWIN_SKETCHFAB_TOKEN, a Sketchfab API token, for real models
+# of the plant and crews (see sitetwin_worker/assets.py).
 
 on:
   push:
@@ -60,11 +61,15 @@ jobs:
           SITE_URL: ${{ secrets.SITETWIN_SITE_URL }}
           WORKER_TOKEN: ${{ secrets.SITETWIN_WORKER_TOKEN }}
           GOOGLE_KEY: ${{ secrets.SITETWIN_GOOGLE_KEY }}
+          SKETCHFAB_TOKEN: ${{ secrets.SITETWIN_SKETCHFAB_TOKEN }}
         run: |
           GOOGLE_KEY="$(printf '%s' "$GOOGLE_KEY" | tr -d '[:space:]')"
           if [ -n "$GOOGLE_KEY" ]; then echo "Google 3D tiles: key found"; else echo "::notice::No SITETWIN_GOOGLE_KEY: surroundings come from OpenStreetMap and satellite imagery only"; fi
           set -- SITETWIN_SITE_URL="$SITE_URL" SITETWIN_WORKER_TOKEN="$WORKER_TOKEN"
           [ -n "$GOOGLE_KEY" ] && set -- "$@" SITETWIN_GOOGLE_KEY="$GOOGLE_KEY"
+          SKETCHFAB_TOKEN="$(printf '%s' "$SKETCHFAB_TOKEN" | tr -d '[:space:]')"
+          if [ -n "$SKETCHFAB_TOKEN" ]; then echo "Sketchfab models: token found"; set -- "$@" SITETWIN_SKETCHFAB_TOKEN="$SKETCHFAB_TOKEN"
+          else echo "::notice::No SITETWIN_SKETCHFAB_TOKEN: plant and crews use the built-in models"; fi
           modal secret create sitetwin "$@" --force
       - name: Deploy
         run: modal deploy modal_app.py
