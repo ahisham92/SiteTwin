@@ -83,10 +83,14 @@ def test_google_tiles_are_placed_cut_round_the_site_and_set_on_its_ground(tmp_pa
     (env / "google").mkdir(parents=True)
     data, credit = g.to_local(_glb_mesh(np.array(pts), faces), np.eye(4), g.enu_matrix(lat, lon))
     (env / "google" / "tile_0000.glb").write_bytes(data)
-    manifest = {"lat": lat, "lon": lon, "radius": 180, "google": {"folder": "google", "files": ["tile_0000.glb"]}}
+    (env / "google" / "far_0000.glb").write_bytes(data)          # the horizon ring, same ground
+    manifest = {"lat": lat, "lon": lon, "radius": 180,
+                "google": {"folder": "google", "files": ["tile_0000.glb"], "far_files": ["far_0000.glb"],
+                           "radius": 120, "horizon": 180}}
     gr = scene.Ground(manifest, env, (-15, -15, 15, 15))
-    level = scene.build_google(gr, manifest, env, (-20, -20, 20, 20))
+    level, lowest = scene.build_google(gr, manifest, env, (-20, -20, 20, 20))
     assert level == pytest.approx(25.0, abs=0.3)
+    assert lowest == pytest.approx(0.0, abs=0.4)
     google = [o for o in bpy.data.objects if o.name.startswith("google_")]
     assert google
     zs = [v.co.z for o in google for v in o.data.vertices]
@@ -95,4 +99,6 @@ def test_google_tiles_are_placed_cut_round_the_site_and_set_on_its_ground(tmp_pa
         for p in o.data.polygons:
             c = p.center
             assert not (-20 <= c.x <= 20 and -20 <= c.y <= 20)    # the site is cut out
-            assert np.hypot(c.x, c.y) <= 181                      # and nothing beyond the radius
+            assert np.hypot(c.x, c.y) <= 181                      # and nothing beyond the horizon
+            if o.name.startswith("google_far") or "far" in o.name:
+                assert np.hypot(c.x, c.y) > 120                   # the ring starts where the circle ends

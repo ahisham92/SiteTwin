@@ -29,8 +29,12 @@ import numpy as np
 ROOT = "https://tile.googleapis.com/v1/3dtiles/root.json"
 #: A tile at least this fine (geometric error, metres) near the site counts as real 3D.
 DETAILED = 4.0
-#: The most tiles one site downloads; each is a few hundred kB.
+#: The most tiles one site downloads for its circle; each is 10 to 30 kB.
 MAX_TILES = 700
+#: How far the coarse ring of Google's 3D reaches beyond the circle, for a real horizon.
+HORIZON = 2500.0
+#: The most tiles of that ring.
+MAX_FAR_TILES = 500
 
 A = 6378137.0
 F = 1 / 298.257223563
@@ -134,15 +138,18 @@ def _absolute(uri: str, base: str, key: str, session: str | None) -> str:
 
 
 def select(root_url: str, key: str, lat: float, lon: float, radius: float, fetch: Fetch,
-           max_tiles: int = MAX_TILES) -> tuple[list[tuple[str, np.ndarray]], float]:
+           max_tiles: int = MAX_TILES, coarse: bool = False) -> tuple[list[tuple[str, np.ndarray]], float]:
     """The glTF tiles to draw the circle around the site with: [(url, tile transform)], and the
-    finest geometric error found at the site itself."""
+    finest geometric error found at the site itself. ``coarse`` asks for the far ring's level of
+    detail (the horizon), a few metres of error close in and tens of metres far out."""
     site = ecef(lat, lon)
     chosen: list[tuple[str, np.ndarray]] = []
     best = math.inf
     session: list[str | None] = [None]
 
     def wanted_error(dist: float) -> float:
+        if coarse:
+            return max(8.0, dist * 0.03)
         # finest at the site, coarser with distance: about 1 cm of error per metre away
         return max(0.6, dist * 0.012)
 
@@ -239,8 +246,9 @@ def to_local(data: bytes, tile_transform: np.ndarray, local: np.ndarray) -> tupl
 
 
 def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
-           key: str | None = None) -> dict[str, Any]:
-    """Download the tiles into ``folder``. Returns the manifest's "google" entry, or raises
+           key: str | None = None, horizon: float = HORIZON) -> dict[str, Any]:
+    """Download the tiles into ``folder``: the detailed circle, and a coarse ring out to
+    ``horizon`` so the skyline is real. Returns the manifest's "google" entry, or raises
     LookupError when Google has no detailed 3D here (the caller falls back)."""
     key = key or os.environ.get("SITETWIN_GOOGLE_KEY", "")
     if not key:
@@ -249,6 +257,12 @@ def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
     folder.mkdir(parents=True, exist_ok=True)
     try:
         tiles, best = select(ROOT, key, lat, lon, radius, fetch)
+        far: list[tuple[str, np.ndarray]] = []
+        if horizon > radius and tiles and best <= DETAILED:
+            try:
+                far, _ = select(ROOT, key, lat, lon, horizon, fetch, max_tiles=MAX_FAR_TILES, coarse=True)
+            except Exception:                            # noqa: BLE001 - the horizon is a bonus
+                far = []
     except LookupError:
         raise
     except Exception as exc:                             # never let the key reach a message
@@ -256,28 +270,30 @@ def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
     if best > DETAILED or not tiles:
         raise LookupError(f"Google has no detailed 3D here (finest tile {best:.0f} m)")
     local = enu_matrix(lat, lon)
-    files, credits = [], set()
+    files, far_files, credits = [], [], set()
 
-    def one(job: tuple[int, tuple[str, np.ndarray]]) -> tuple[str, str] | None:
-        n, (url, transform) = job
+    def one(job: tuple[str, tuple[str, np.ndarray]]) -> tuple[str, str] | None:
+        name, (url, transform) = job
         try:
             glb, credit = to_local(fetch(url, None), transform, local)
         except Exception:                                # noqa: BLE001 - a missing tile is a small gap
             return None
-        name = f"tile_{n:04d}.glb"
         (folder / name).write_bytes(glb)
         return name, credit
 
+    jobs = [(f"tile_{n:04d}.glb", t) for n, t in enumerate(tiles)] + \
+           [(f"far_{n:04d}.glb", t) for n, t in enumerate(far)]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(16) as pool:
-        for got in pool.map(one, enumerate(tiles)):
+        for got in pool.map(one, jobs):
             if got is None:
                 continue
-            files.append(got[0])
+            (far_files if got[0].startswith("far_") else files).append(got[0])
             for c in got[1].split(";"):
                 if c.strip():
                     credits.add(c.strip())
     if not files:
         raise LookupError("none of Google's tiles could be downloaded")
-    return {"folder": folder.name, "files": files, "finest": best,
+    return {"folder": folder.name, "files": files, "far_files": far_files, "radius": radius,
+            "horizon": horizon if far_files else radius, "finest": best,
             "credit": "Google" + (" · " + "; ".join(sorted(credits)) if credits else "")}
