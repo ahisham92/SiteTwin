@@ -1,5 +1,5 @@
-"""Follows Google's 3D tileset down the branch nearest a place, printing each level (for checks)."""
-import json, os, sys
+"""Walks Google's 3D tileset down every branch within 60 m of a place, level by level (for checks)."""
+import json, os, sys, urllib.parse
 import numpy as np
 from sitetwin_worker import google3d as g
 from sitetwin_worker.environment import http_get
@@ -8,35 +8,29 @@ key = os.environ["SITETWIN_GOOGLE_KEY"].strip()
 lat, lon = float(sys.argv[1]), float(sys.argv[2])
 site = g.ecef(lat, lon)
 url = g._absolute(g.ROOT, g.ROOT, key, None)
-doc = json.loads(http_get(url))
-tile, base, T, session = doc["root"], url, np.eye(4), None
-for depth in range(40):
-    T = T @ g._mat(tile["transform"]) if "transform" in tile else T
-    c = tile.get("content") or {}
-    uri = c.get("uri", "")
-    kids = tile.get("children") or []
-    d = g.distance_to_volume(tile["boundingVolume"], site, T)
-    bv = tile["boundingVolume"]
-    if "box" in bv:
-        c = (T @ np.append(bv["box"][:3], 1))[:3]
-        print("   box centre", [round(v) for v in c], "half", [round(float(np.linalg.norm(bv["box"][3 + 3 * k:6 + 3 * k]))) for k in range(3)],
-              "site", [round(v) for v in site], "transform" in tile)
-    else:
-        print("   volume", list(bv))
-    print(depth, "err", tile.get("geometricError"), "dist", round(d, 1), "kids", len(kids), "content", uri.split("?")[0][-30:])
-    if uri.split("?")[0].endswith(".json"):
-        url2 = g._absolute(uri, base, key, session)
-        import urllib.parse
-        session = session or dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url2).query)).get("session")
-        sub = json.loads(http_get(url2))
-        tile, base = sub["root"], url2
-        continue
-    if not kids:
+level = [(json.loads(http_get(url))["root"], url, np.eye(4))]
+session = None
+for depth in range(45):
+    nxt, errs, glbs = [], [], []
+    for tile, base, T in level:
+        T = T @ g._mat(tile["transform"]) if "transform" in tile else T
+        if g.distance_to_volume(tile["boundingVolume"], site, T) > 60:
+            continue
+        errs.append(tile.get("geometricError"))
+        uri = (tile.get("content") or {}).get("uri", "")
+        if uri.split("?")[0].endswith(".json"):
+            u = g._absolute(uri, base, key, session)
+            session = session or dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(u).query)).get("session")
+            nxt.append((json.loads(http_get(u))["root"], u, T))
+            continue
         if uri:
-            data = http_get(g._absolute(uri, base, key, session))
-            print("leaf glb bytes", len(data))
+            glbs.append((g._absolute(uri, base, key, session), bool(tile.get("children"))))
+        for k in tile.get("children") or []:
+            nxt.append((k, base, T))
+    if not errs:
         break
-    if depth < 4:
-        for k in kids:
-            print("     child", k["boundingVolume"].get("box", k["boundingVolume"])[:3], round(g.distance_to_volume(k["boundingVolume"], site, T)))
-    tile = min(kids, key=lambda k: g.distance_to_volume(k["boundingVolume"], site, T))
+    leaf = [u for u, kids in glbs if not kids]
+    print(depth, "tiles near", len(errs), "error min", min(errs), "max", max(errs), "glb", len(glbs), "leaves", len(leaf))
+    if leaf:
+        print("   a leaf glb is", len(http_get(leaf[0])), "bytes")
+    level = nxt
