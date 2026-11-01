@@ -28,9 +28,9 @@ from typing import Any, Callable
 API = "https://api.sketchfab.com/v3/models/{uid}/download"
 
 #: kind -> the model used for it. Picked by hand from tools/sketchfab_search.py.
+#: (No worker yet: the free figures found are T-posed rigs or carry props; the built-in crews
+#: stand in until a posed scan is found.)
 CATALOG: dict[str, dict[str, Any]] = {
-    "worker": {"uid": "b6aa2d7b550d4b3c8a7df5c3b414e5e9", "name": "009 Male Worker Welder 02",
-               "author": "grewe.juergen", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.75},
     "mixer_truck": {"uid": "8d1d88a5955f4e7da13562bb7bec146f", "name": "Concrete Mixer Truck",
                     "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.0},
     "concrete_pump": {"uid": "4328809da1c94ffb95a8eeb60bb6ce9b", "name": "Concrete Pump Truck (Boom Pump)",
@@ -38,9 +38,9 @@ CATALOG: dict[str, dict[str, Any]] = {
     "piling_rig": {"uid": "997e8984809540e5b3e5ea693eb96983", "name": "Pile Driver",
                    "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "height": 22.0},
     "excavator": {"uid": "3dde2c846cc54a4d9fabcc821c9b9caa", "name": "Hitachi excavator",
-                  "author": "thesidekick", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.5},
-    "flatbed_truck": {"uid": "39195e554c7a41a2884186c10d5079c0", "name": "Lightbody '90 MD Flatbed",
-                      "author": "DanielZhabotinsky", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.5},
+                  "author": "thesidekick", "licence": "CC BY 4.0", "yaw": 180.0, "length": 9.5},
+    "flatbed_truck": {"uid": "8ee4c1329219413e879760a25208ee15", "name": "Mercedes Actros com Semi Reboque Prancha",
+                      "author": "LuizZed36", "licence": "CC BY 4.0", "yaw": 180.0, "length": 16.5},
     "mewp": {"uid": "4823e73dd2f94cbd9291b5d55df7f226", "name": "Electric Scissor Lift 1",
              "author": "cloudhub", "licence": "CC BY 4.0", "yaw": 0.0, "length": 2.5},
 }

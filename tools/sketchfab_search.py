@@ -3,15 +3,9 @@ best first, so they can be picked by hand. Needs no token (searching is public).
 import json, sys, urllib.parse, urllib.request
 
 KINDS = {
-    "worker": ["construction worker", "worker hi vis", "construction worker scan"],
-    "mixer_truck": ["concrete mixer truck"],
-    "flatbed_truck": ["flatbed truck", "lorry truck"],
-    "concrete_pump": ["concrete pump truck"],
-    "excavator": ["excavator"],
-    "piling_rig": ["piling rig", "drilling rig construction"],
-    "mewp": ["scissor lift", "boom lift"],
-    "site_cabin": ["site office container", "portable cabin"],
-    "tower_crane": ["tower crane"],
+    "worker": ["construction worker", "worker scan", "workman", "builder man", "hard hat worker"],
+    "flatbed_truck": ["flatbed lorry", "volvo truck", "scania truck", "mercedes actros", "man tgs truck", "dump truck", "semi truck trailer"],
+    "mixer_truck": ["cement mixer truck", "transit mixer"],
 }
 for kind, queries in KINDS.items():
     seen, rows = set(), []
