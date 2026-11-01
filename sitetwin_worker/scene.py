@@ -365,7 +365,7 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                 wa = 1.0 - smooth01((across - 5.0) / 7.0) if across > 5.0 else 1.0
                 wa *= 1.0 - smooth01((along - 60.0) / 10.0) if along > 60.0 else 1.0
                 w = max(w, wa)
-        return z * (1.0 - w)
+        return z * (1.0 - w) - 0.1 * w                    # graded ground stays just under the pad
 
     inner = float(info.get("radius", g.radius))
     outer = float(info.get("horizon", inner))
@@ -376,7 +376,8 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
             bm = bmesh.new()
             bm.from_mesh(o.data)
             gone = [f for f in bm.faces
-                    if not keep(c := f.calc_center_median()) or (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1)]
+                    if not keep(c := f.calc_center_median()) or (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1)
+                    or any(kx0 <= v.co.x <= kx1 and ky0 <= v.co.y <= ky1 for v in f.verts)]
             bmesh.ops.delete(bm, geom=gone, context="FACES")
             for v in bm.verts:
                 x, y, z = v.co

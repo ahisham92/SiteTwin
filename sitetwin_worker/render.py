@@ -114,6 +114,9 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     manifest = environment.gather(lat, lon, radius, out / "environment")
     for k, why in manifest.get("missing", {}).items():
         log(f"  no {k}: {why}")
+    if manifest.get("google"):                     # Google's mesh replaces the terrain, imagery and OSM
+        manifest = dict(manifest, credits=[c for c in manifest.get("credits", [])
+                                           if not c.startswith(("Terrain", "Imagery", "Buildings"))])
     from . import assets, equipment
     cache = Path(os.environ.get("SITETWIN_ASSET_CACHE", str(out / "models")))
     models, model_credits = assets.prepare(cache, log=log)
