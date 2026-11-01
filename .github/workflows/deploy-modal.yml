@@ -32,6 +32,27 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install "modal>=1.0"
+      - name: Check the secrets are there and look right (values are never printed)
+        env:
+          SITE_URL: ${{ secrets.SITETWIN_SITE_URL }}
+          WORKER_TOKEN: ${{ secrets.SITETWIN_WORKER_TOKEN }}
+        run: |
+          ok=1
+          check() {  # name, value, expected prefix
+            v="$(printf '%s' "$2" | tr -d '[:space:]')"
+            if [ -z "$v" ]; then echo "::error::Secret $1 is missing or empty"; ok=0
+            elif [ -n "$3" ] && [ "${v#"$3"}" = "$v" ]; then echo "::error::Secret $1 does not start with $3 (is it the right value?)"; ok=0
+            elif [ "$v" != "$2" ]; then echo "::warning::Secret $1 has spaces or a line break in it; they are ignored"
+            else echo "$1 looks right"; fi
+          }
+          check MODAL_TOKEN_ID "$MODAL_TOKEN_ID" ak-
+          check MODAL_TOKEN_SECRET "$MODAL_TOKEN_SECRET" as-
+          check SITETWIN_SITE_URL "$SITE_URL" http
+          check SITETWIN_WORKER_TOKEN "$WORKER_TOKEN" ""
+          [ "$ok" = 1 ] || exit 1
+          # pass the trimmed tokens on to the next steps
+          echo "MODAL_TOKEN_ID=$(printf '%s' "$MODAL_TOKEN_ID" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+          echo "MODAL_TOKEN_SECRET=$(printf '%s' "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')" >> "$GITHUB_ENV"
       - name: Store the site's address and token on Modal
         run: |
           modal secret create sitetwin \
