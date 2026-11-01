@@ -26,7 +26,26 @@ CREATE TABLE IF NOT EXISTS projects (
     model_name  TEXT,
     model_summary TEXT             -- JSON from ifc.summarise
 );
+CREATE TABLE IF NOT EXISTS jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id  INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    owner       TEXT NOT NULL,
+    quality     TEXT NOT NULL,
+    seconds     REAL NOT NULL,
+    status      TEXT NOT NULL,       -- queued, running, done, failed
+    percent     REAL NOT NULL DEFAULT 0,
+    message     TEXT,
+    worker      TEXT,
+    created     REAL NOT NULL,
+    started     REAL,
+    finished    REAL,
+    video       TEXT
+);
 """
+
+QUALITIES = ("preview", "draft", "final", "4k")
+#: A job a worker took and has not reported on for this long is offered again.
+STALE_SECONDS = 30 * 60
 
 
 class StoreError(Exception):
@@ -106,7 +125,70 @@ class Store:
     def delete(self, owner: str, pid: int) -> None:
         self.project(owner, pid)
         with self._db() as db:
+            db.execute("DELETE FROM jobs WHERE project_id=?", (pid,))
             db.execute("DELETE FROM projects WHERE id=?", (pid,))
+
+    # ---- render jobs ----------------------------------------------------------------
+
+    def queue_render(self, owner: str, pid: int, quality: str = "draft", seconds: float = 90) -> dict[str, Any]:
+        project = self.project(owner, pid)
+        if not project["model_name"]:
+            raise StoreError(400, "Upload the IFC model first.")
+        if project["latitude"] is None:
+            raise StoreError(400, "Set the location first: the surroundings are fetched from it.")
+        if quality not in QUALITIES:
+            raise StoreError(400, "Unknown quality.")
+        seconds = float(seconds)
+        if not 10 <= seconds <= 600:
+            raise StoreError(400, "A film runs between 10 seconds and 10 minutes.")
+        with self._db() as db:
+            busy = db.execute("SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','running')",
+                              (pid,)).fetchone()
+            if busy:
+                raise StoreError(409, "A video of this project is already being made.")
+            cur = db.execute("INSERT INTO jobs (project_id, owner, quality, seconds, status, created) "
+                             "VALUES (?,?,?,?,'queued',?)", (pid, owner, quality, seconds, time.time()))
+            jid = cur.lastrowid
+        return self.job(jid)
+
+    def job(self, jid: int) -> dict[str, Any]:
+        with self._db() as db:
+            row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
+        if row is None:
+            raise StoreError(404, "There is no such job.")
+        return dict(row)
+
+    def jobs(self, owner: str, pid: int) -> list[dict[str, Any]]:
+        with self._db() as db:
+            rows = db.execute("SELECT * FROM jobs WHERE project_id=? AND owner=? ORDER BY id DESC",
+                              (pid, owner)).fetchall()
+        return [dict(r) for r in rows]
+
+    def claim(self, worker: str) -> dict[str, Any] | None:
+        """The oldest waiting job (or one whose worker went quiet), now running for this worker."""
+        now = time.time()
+        with self._db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM jobs WHERE status='queued' OR (status='running' AND started < ?) "
+                "ORDER BY id LIMIT 1", (now - STALE_SECONDS,)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE jobs SET status='running', worker=?, started=?, percent=0, message=? WHERE id=?",
+                       (worker[:100], now, "Picked up", row["id"]))
+        return self.job(row["id"])
+
+    def progress(self, jid: int, percent: float, message: str) -> None:
+        with self._db() as db:
+            db.execute("UPDATE jobs SET percent=?, message=?, started=? WHERE id=? AND status='running'",
+                       (max(0.0, min(100.0, float(percent))), (message or "")[:300], time.time(), jid))
+
+    def finish(self, jid: int, video: str | None, message: str = "") -> dict[str, Any]:
+        status = "done" if video else "failed"
+        with self._db() as db:
+            db.execute("UPDATE jobs SET status=?, video=?, message=?, finished=?, percent=? WHERE id=?",
+                       (status, video, (message or "")[:1000], time.time(), 100.0 if video else 0.0, jid))
+        return self.job(jid)
 
     def _update(self, pid: int, fields: dict[str, Any]) -> None:
         cols = ", ".join(f"{k}=?" for k in fields)

@@ -52,6 +52,40 @@
 </section>
 {% endif %}
 
+<section class="card">
+  <h2>Video</h2>
+  {% if done %}
+    <video controls preload="metadata" src="{{ url_for('video', pid=p['id'], jid=done['id']) }}"></video>
+    <p class="muted">{{ done['quality']|title }}, {{ done['seconds']|int }} s{% if done['message'] %} · {{ done['message'] }}{% endif %}
+      · <a href="{{ url_for('video', pid=p['id'], jid=done['id']) }}" download>Download MP4</a></p>
+  {% endif %}
+  {% if job and job['status'] in ('queued', 'running') %}
+    <p><strong>{{ 'Waiting for the render machine' if job['status'] == 'queued' else 'Rendering' }}</strong>
+      {% if job['status'] == 'running' %}· {{ job['percent']|round|int }}% · {{ job['message'] }}{% endif %}</p>
+    <div class="bar-track"><div class="bar-fill" style="width: {{ job['percent'] }}%"></div></div>
+    <p class="muted small">Refresh to see how it is going.</p>
+  {% else %}
+    {% if job and job['status'] == 'failed' %}<p class="error">The last render failed: {{ job['message'] }}</p>{% endif %}
+    {% if p['model_name'] and p['latitude'] is not none %}
+    <form method="post" action="{{ url_for('render_video', pid=p['id']) }}" class="row">
+      <label>Quality
+        <select name="quality">
+          <option value="preview">Preview (640×360, quick)</option>
+          <option value="draft" selected>Draft (1280×720)</option>
+          <option value="final">Final (1920×1080)</option>
+          <option value="4k">4K (3840×2160)</option>
+        </select></label>
+      <label>Length (seconds) <input name="seconds" type="number" min="10" max="600" value="90"></label>
+      <button>{{ 'Make the video again' if done else 'Make the video' }}</button>
+    </form>
+    <p class="muted small">The surroundings are fetched from the location, the build is sequenced from the model,
+      and the film is rendered on the render machine{% if not worker_set %} (none is connected to this site yet){% endif %}.</p>
+    {% else %}
+    <p class="muted">Upload the model and set the location to make the video.</p>
+    {% endif %}
+  {% endif %}
+</section>
+
 <form method="post" action="{{ url_for('delete_project', pid=p['id']) }}" class="danger">
   <button>Delete this project</button>
 </form>

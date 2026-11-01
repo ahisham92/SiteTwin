@@ -12,7 +12,7 @@ its site, and plays the build back as a video of a few minutes, with the plant a
 {% if projects %}
 <ul class="projects">
   {% for p in projects %}
-  {% set s = stage_states(p) %}
+  {% set s = p['states'] %}
   <li class="card">
     <a href="{{ url_for('project_page', pid=p['id']) }}"><strong>{{ p['name'] }}</strong></a>
     <span class="muted">{{ p['model_name'] or 'No model yet' }}</span>

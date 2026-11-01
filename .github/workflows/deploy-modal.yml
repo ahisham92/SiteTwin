@@ -1,0 +1,41 @@
+name: Deploy renderer to Modal
+
+# Puts the render worker on Modal whenever main changes (or when run by hand).
+# Needs four repository secrets: MODAL_TOKEN_ID and MODAL_TOKEN_SECRET (from
+# modal.com → Settings → API tokens), SITETWIN_SITE_URL (SiteTwin's address on
+# the website, e.g. https://example.com/sitetwin) and SITETWIN_WORKER_TOKEN (any
+# long random string, also set on the website).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      gpu:
+        description: "GPU type (T4, L4, A10G, L40S, A100)"
+        default: "L4"
+      max_gpus:
+        description: "Most GPUs one film may use at once"
+        default: "10"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+      SITETWIN_GPU: ${{ inputs.gpu || 'L4' }}
+      SITETWIN_MAX_GPUS: ${{ inputs.max_gpus || '10' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "modal>=1.0"
+      - name: Store the site's address and token on Modal
+        run: |
+          modal secret create sitetwin \
+            SITETWIN_SITE_URL="${{ secrets.SITETWIN_SITE_URL }}" \
+            SITETWIN_WORKER_TOKEN="${{ secrets.SITETWIN_WORKER_TOKEN }}" --force
+      - name: Deploy
+        run: modal deploy modal_app.py

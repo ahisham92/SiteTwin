@@ -17,9 +17,9 @@ mounted at `/sitetwin` behind the site's sign-in, the same way Iris and Triton a
 |---|---|---|
 | **Model** | Upload the `.ifc` from Revit. It is read for its elements, storeys and containment. | Working |
 | **Location** | Taken from the model's `IfcSite` (latitude, longitude, elevation), or typed in. | Working |
-| **Environment** | The real surroundings are pulled in around that point: terrain, existing buildings, roads, water, and photo-real 3D tiles. | Planned |
+| **Environment** | The real surroundings are fetched around that point, automatically: terrain, aerial imagery, existing buildings, roads, railways and water. | Working (render worker) |
 | **Sequence** | A first draft is read straight from the model (storey by storey, foundations → frame → floors → envelope → services). The planner edits it, or brings in a P6 / MS Project programme, and each step gets its plant and crews. | Draft working |
-| **Video** | The sequence rendered as a film with real lighting, shadows, dust and moving equipment and people. | Planned |
+| **Video** | The sequence rendered as a film with the real sun for the site and date, plant and crews at work, captions and credits. Press **Make the video** on the project page. | Working (render worker) |
 
 ## Architecture
 
@@ -35,7 +35,7 @@ runs as a separate **render worker** that picks up jobs and posts the finished v
                        └──── video ─────────└─ Render (Unreal Engine 5 / Blender Cycles)
 ```
 
-**Making it real** (the plan for the worker):
+**Making it real** (the original plan; see "The render worker" for what is built):
 
 - **Geometry:** IfcOpenShell converts IFC to glTF with Revit materials kept; `IfcMapConversion`
   or the site's lat/long places it exactly.
@@ -49,6 +49,91 @@ runs as a separate **render worker** that picks up jobs and posts the finished v
 - **Rendering:** Unreal Engine 5 (Lumen, Nanite, Movie Render Queue) for photo-real output,
   with Blender Cycles as the scriptable headless alternative. Real sun position from the
   site's coordinates and the programme dates.
+
+## The render worker
+
+Nothing is done site by site. Press **Make the video** on a project and a render
+machine does the rest:
+
+1. **Model.** IfcOpenShell turns every element of the IFC into a mesh in metres.
+2. **Surroundings**, from the location alone (`sitetwin_worker/environment.py`), each optional:
+   - terrain: AWS Terrain Tiles (SRTM, Copernicus, national surveys), with the site graded flat,
+     an excavation for the foundations, and the sea where the tiles say there is sea;
+   - aerial imagery draped over the terrain: Esri World Imagery by default, or any XYZ service
+     (`SITETWIN_IMAGERY_URL`, e.g. Mapbox, MapTiler or a national orthophoto);
+   - OpenStreetMap through Overpass: the neighbouring buildings at their mapped heights or
+     storeys (believable heights where they are not mapped), roads, rail, water, parks.
+     Buildings on the site itself are cleared.
+3. **Sequence** (`sequence.py`). Storey by storey, foundations → frame → floors → stairs →
+   roof → envelope → finishes → services, each element placed in turn: concrete grows from its
+   base, beams, precast and glazing are lowered in, finishes appear.
+4. **Plant and crews** (`equipment.py`). A tower crane sized to the building (its jib swings to
+   each lifted element, the hook pays out to it), a piling rig and an excavator in the dig,
+   mixer and flatbed trucks coming and going through the gate, a boom pump at the pours, a
+   scissor lift round the facade, and the crew for each step on the floor being built. Hoarding,
+   a gate on the land side, site cabins and a laydown area. Each is modelled in code; drop a
+   real glTF model (e.g. `tower_crane.glb`) into the folder `SITETWIN_ASSETS` names and it is used
+   instead.
+5. **Render** (`scene.py`). Blender Cycles, on the GPU when there is one. Physical sky and the sun at
+   the site's real latitude/longitude and date, AgX colour, procedural concrete, steel, glass,
+   soil and asphalt, a slow orbiting camera. Each frame is captioned with the step being built
+   and the data credits; ffmpeg joins them into an MP4, sent back to the project.
+
+| Quality | Size | A frame on a mid-range GPU | A frame on a 4-core CPU |
+|---|---|---|---|
+| preview | 640×360 | under 1 s | about 5 s |
+| draft | 1280×720 | 1–2 s | about 25 s |
+| final | 1920×1080 | 3–6 s | minutes |
+
+A 90-second film at 30 fps is 2,700 frames, so a final film wants a GPU.
+
+### Running a render machine on your own PC
+
+```bash
+pip install -r requirements-worker.txt        # Python 3.13; ffmpeg on PATH
+export SITETWIN_WORKER_TOKEN=...              # the same token set on the site
+python -m sitetwin_worker serve --site https://your.site/sitetwin
+```
+
+It only calls out to the site, so it works behind an office firewall, on a PC or on a cloud GPU.
+To render one model directly, without the site:
+
+```bash
+python -m sitetwin_worker render model.ifc --out film/ --quality draft --seconds 90
+python -m sitetwin_worker render model.ifc --frames 1,400,900 --quality preview   # a few stills to check
+python tools/make_sample_ifc.py sample.ifc --lat 33.66 --lon 35.42                # a test building
+```
+
+### Rendering in the cloud with Modal (recommended)
+
+[Modal](https://modal.com) runs the renderer on a cloud GPU only while a film is being made, so
+nothing runs on anyone's PC and nothing is paid while idle. A film is split into parts rendered on
+several GPUs at once (10 by default), so a 5-minute film takes about as long as a 30-second one.
+
+Rough cost on an L4 GPU (about $0.80 an hour): a 90-second 1080p film $1.50–3, a 5-minute one
+$4–10; 720p drafts about a third of that. Each finished video shows its real GPU time and cost.
+
+**Set up once:**
+
+1. Make a Modal account at modal.com, then **Settings → API tokens → New token**.
+2. In this repository on GitHub, **Settings → Secrets and variables → Actions**, add:
+   `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` (from step 1), `SITETWIN_SITE_URL`
+   (e.g. `https://yoursite.com/sitetwin`) and `SITETWIN_WORKER_TOKEN` (any long random string).
+3. On the website's host, set the environment variable `SITETWIN_WORKER_TOKEN` to the same string.
+4. Run **Actions → Deploy renderer to Modal → Run workflow** (it also runs on every push to main).
+5. Optional, so renders start at once instead of within 2 minutes: set `SITETWIN_WAKE_URL` on the
+   website to the `wake` address the deploy prints (`https://<workspace>--sitetwin-wake.modal.run`).
+
+To deploy from a PC instead: `pip install modal`, `modal setup`, the `modal secret create` line from
+the workflow, then `modal deploy modal_app.py`.
+
+### Making it more real, next
+
+- Google Photorealistic 3D Tiles for cities that have them (needs a Google Maps Platform key).
+- Real plant and crew models (manufacturer or photogrammetry glTFs) in `SITETWIN_ASSETS`.
+- Formwork, rebar cages and props shown before each pour; scaffolding on the facade.
+- Dust, vehicle tracks and weather; the programme's real dates for the sun and the seasons.
+- Bringing in the planner's own programme (P6 / MS Project XML, or IFC 4D tasks) instead of the draft.
 
 ## Running it
 
