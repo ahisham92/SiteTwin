@@ -1,0 +1,2 @@
+# The web app: pure Python, nothing to compile, SQLite for storage.
+Flask>=3.0,<4.0

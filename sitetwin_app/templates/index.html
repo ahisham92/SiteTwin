@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Projects</h1>
+<p class="muted">Each project takes an IFC model from Revit, sets it in the real surroundings of
+its site, and plays the build back as a video of a few minutes, with the plant and the people doing it.</p>
+
+<form class="card new" method="post" action="{{ url_for('new_project') }}">
+  <label>New project <input name="name" required maxlength="200" placeholder="e.g. Sibline Port berth 3"></label>
+  <button>Create</button>
+</form>
+
+{% if projects %}
+<ul class="projects">
+  {% for p in projects %}
+  {% set s = stage_states(p) %}
+  <li class="card">
+    <a href="{{ url_for('project_page', pid=p['id']) }}"><strong>{{ p['name'] }}</strong></a>
+    <span class="muted">{{ p['model_name'] or 'No model yet' }}</span>
+    <span class="pips">{% for k in ['model','location','environment','sequence','video'] %}<i class="pip {{ s[k] }}" title="{{ k }}: {{ s[k] }}"></i>{% endfor %}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="muted">No projects yet.</p>
+{% endif %}
+{% endblock %}

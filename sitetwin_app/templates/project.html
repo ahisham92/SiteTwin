@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}{{ p['name'] }} · SiteTwin{% endblock %}
+{% block content %}
+<p><a href="{{ url_for('home') }}">← Projects</a></p>
+<h1>{{ p['name'] }}</h1>
+
+<ol class="stages">
+  {% for key, name, what in stages %}
+  <li class="stage {{ states[key] }}"><strong>{{ name }}</strong><span>{{ what }}</span><em>{{ states[key] }}</em></li>
+  {% endfor %}
+</ol>
+
+<section class="card">
+  <h2>Model</h2>
+  {% set m = p['model_summary'] %}
+  {% if m %}
+    <p><strong>{{ p['model_name'] }}</strong> · {{ m['schema'] }}{% if m['project'] %} · {{ m['project'] }}{% endif %}</p>
+    <table><thead><tr><th>Element</th><th>Count</th></tr></thead><tbody>
+      {% for kind, n in m['counts'].items() %}<tr><td>{{ kind[3:]|title }}</td><td>{{ n }}</td></tr>{% endfor %}
+    </tbody></table>
+  {% endif %}
+  <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_model', pid=p['id']) }}">
+    <label>{{ 'Replace the model' if m else 'Upload the IFC model' }} <input type="file" name="model" accept=".ifc" required></label>
+    <button>Upload</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Location</h2>
+  {% if p['latitude'] is not none %}
+    <p>{{ '%.6f'|format(p['latitude']) }}, {{ '%.6f'|format(p['longitude']) }}{% if p['elevation'] is not none %} · {{ p['elevation'] }} m{% endif %}
+       <span class="muted">({{ 'from the model' if p['location_from'] == 'ifc' else 'typed in' }})</span>
+       · <a href="https://www.openstreetmap.org/?mlat={{ p['latitude'] }}&mlon={{ p['longitude'] }}#map=17/{{ p['latitude'] }}/{{ p['longitude'] }}" target="_blank" rel="noopener">See it on the map</a></p>
+  {% else %}
+    <p class="muted">The model did not say where it is. Set the Revit project's survey point / site location before exporting, or type it here.</p>
+  {% endif %}
+  <form method="post" action="{{ url_for('set_location', pid=p['id']) }}" class="row">
+    <label>Latitude <input name="latitude" inputmode="decimal" required value="{{ p['latitude'] if p['latitude'] is not none else '' }}"></label>
+    <label>Longitude <input name="longitude" inputmode="decimal" required value="{{ p['longitude'] if p['longitude'] is not none else '' }}"></label>
+    <label>Elevation (m) <input name="elevation" inputmode="decimal" value="{{ p['elevation'] if p['elevation'] is not none else '' }}"></label>
+    <button>Save location</button>
+  </form>
+</section>
+
+{% if m and m['sequence'] %}
+<section class="card">
+  <h2>Draft sequence</h2>
+  <p class="muted">Read from the model: storey by storey, bottom up, each storey's elements in the order they are built. It is the starting point the planner edits; plant and crews are added per step in the next stage.</p>
+  <table><thead><tr><th>#</th><th>Storey</th><th>Work</th><th>Elements</th></tr></thead><tbody>
+    {% for s in m['sequence'] %}<tr><td>{{ s['step'] }}</td><td>{{ s['storey'] }}</td><td>{{ s['phase'] }}</td><td>{{ s['elements'] }}</td></tr>{% endfor %}
+  </tbody></table>
+</section>
+{% endif %}
+
+<form method="post" action="{{ url_for('delete_project', pid=p['id']) }}" class="danger">
+  <button>Delete this project</button>
+</form>
+{% endblock %}
