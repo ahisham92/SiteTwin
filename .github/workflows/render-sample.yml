@@ -1,0 +1,42 @@
+name: Render a sample film
+
+# Renders the sample building (or another IFC in the repo) at a place, on the Modal GPUs,
+# and keeps the MP4 as this run's artifact. Costs GPU time: run it by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      lat: {description: "Latitude", default: "33.8938"}
+      lon: {description: "Longitude", default: "35.5018"}
+      seconds: {description: "Length in seconds", default: "60"}
+      quality: {description: "preview, draft, final or 4k", default: "draft"}
+      ifc: {description: "IFC in the repository", default: "samples/sample-building.ifc"}
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "modal>=1.0"
+      - name: Render
+        env:
+          LAT: ${{ inputs.lat }}
+          LON: ${{ inputs.lon }}
+          SECONDS: ${{ inputs.seconds }}
+          QUALITY: ${{ inputs.quality }}
+          IFC: ${{ inputs.ifc }}
+        run: |
+          export MODAL_TOKEN_ID="$(printf '%s' "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          export MODAL_TOKEN_SECRET="$(printf '%s' "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          modal run modal_app.py::sample --ifc "$IFC" --lat "$LAT" --lon "$LON" --seconds "$SECONDS" --quality "$QUALITY" --out film.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sitetwin-sample-film
+          path: film.mp4

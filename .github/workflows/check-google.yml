@@ -12,9 +12,6 @@ on:
       lon:
         description: "Longitude"
         default: "35.5018"
-  push:
-    branches: [claude/real-film]
-    paths: [sitetwin_worker/google3d.py, .github/workflows/check-google.yml, tools/google_probe.py]
 
 jobs:
   check:
@@ -31,7 +28,6 @@ jobs:
           LAT: ${{ inputs.lat || '' }}
           LON: ${{ inputs.lon || '' }}
         run: |
-          PYTHONPATH=. python tools/google_probe.py 25.1972 55.2744 | sed "s/$SITETWIN_GOOGLE_KEY/…/g"
           python - <<'PY'
           import os, tempfile, time
           from pathlib import Path

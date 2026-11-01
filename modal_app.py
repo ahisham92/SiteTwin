@@ -162,6 +162,46 @@ def handle_job(got: dict) -> None:
         work.commit()
 
 
+@app.function(image=render_image, volumes={"/work": work}, timeout=6 * 3600, secrets=[secret])
+def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str, title: str) -> dict:
+    """A film of any model at any place, without the site: for trying changes out."""
+    import shutil
+    import uuid
+
+    from sitetwin_worker.render import chunks, join, run
+
+    folder = Path(f"/work/sample_{uuid.uuid4().hex[:8]}")
+    folder.mkdir(parents=True)
+    (folder / "model.ifc").write_bytes(ifc)
+    args = {"lat": lat, "lon": lon, "seconds": seconds, "quality": quality, "title": title}
+    try:
+        prep = run(folder / "model.ifc", folder, lat, lon, seconds=seconds, quality=quality, title=title,
+                   prepare_only=True)
+        work.commit()
+        runs = chunks(prep["frames"], prep["fps"], MAX_GPUS)
+        results = list(render_chunk.starmap([(str(folder), args, a, b, 0) for a, b in runs]))
+        work.reload()
+        video = folder / "film.mp4"
+        join([Path(r["segment"]) for r in sorted(results, key=lambda r: r["first"])], video)
+        gpu_seconds = sum(r["seconds"] for r in results)
+        manifest = prep["manifest"]
+        return {"video": video.read_bytes(), "gpus": len(runs), "gpu_hours": gpu_seconds / 3600,
+                "cost": gpu_seconds / 3600 * PRICE_PER_HOUR.get(GPU, 1.0),
+                "google": bool(manifest.get("google")), "skipped": manifest.get("google_skipped"),
+                "missing": manifest.get("missing", {})}
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
+        work.commit()
+
+
+@app.local_entrypoint()
+def sample(ifc: str = "samples/sample-building.ifc", lat: float = 33.66, lon: float = 35.42,
+           seconds: float = 60, quality: str = "draft", title: str = "SiteTwin sample", out: str = "film.mp4"):
+    got = sample_film.remote(Path(ifc).read_bytes(), lat, lon, seconds, quality, title)
+    Path(out).write_bytes(got.pop("video"))
+    print(f"Written {out}: {got}")
+
+
 @app.function(image=light_image, secrets=[secret], schedule=modal.Period(minutes=2), timeout=300)
 def dispatch() -> int:
     """Hand every waiting job to its own handler."""
