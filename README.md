@@ -87,7 +87,7 @@ machine does the rest:
 
 A 90-second film at 30 fps is 2,700 frames, so a final film wants a GPU.
 
-### Running a render machine
+### Running a render machine on your own PC
 
 ```bash
 pip install -r requirements-worker.txt        # Python 3.13; ffmpeg on PATH
@@ -103,6 +103,29 @@ python -m sitetwin_worker render model.ifc --out film/ --quality draft --seconds
 python -m sitetwin_worker render model.ifc --frames 1,400,900 --quality preview   # a few stills to check
 python tools/make_sample_ifc.py sample.ifc --lat 33.66 --lon 35.42                # a test building
 ```
+
+### Rendering in the cloud with Modal (recommended)
+
+[Modal](https://modal.com) runs the renderer on a cloud GPU only while a film is being made, so
+nothing runs on anyone's PC and nothing is paid while idle. A film is split into parts rendered on
+several GPUs at once (10 by default), so a 5-minute film takes about as long as a 30-second one.
+
+Rough cost on an L4 GPU (about $0.80 an hour): a 90-second 1080p film $1.50–3, a 5-minute one
+$4–10; 720p drafts about a third of that. Each finished video shows its real GPU time and cost.
+
+**Set up once:**
+
+1. Make a Modal account at modal.com, then **Settings → API tokens → New token**.
+2. In this repository on GitHub, **Settings → Secrets and variables → Actions**, add:
+   `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` (from step 1), `SITETWIN_SITE_URL`
+   (e.g. `https://yoursite.com/sitetwin`) and `SITETWIN_WORKER_TOKEN` (any long random string).
+3. On the website's host, set the environment variable `SITETWIN_WORKER_TOKEN` to the same string.
+4. Run **Actions → Deploy renderer to Modal → Run workflow** (it also runs on every push to main).
+5. Optional, so renders start at once instead of within 2 minutes: set `SITETWIN_WAKE_URL` on the
+   website to the `wake` address the deploy prints (`https://<workspace>--sitetwin-wake.modal.run`).
+
+To deploy from a PC instead: `pip install modal`, `modal setup`, the `modal secret create` line from
+the workflow, then `modal deploy modal_app.py`.
 
 ### Making it more real, next
 

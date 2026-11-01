@@ -112,7 +112,22 @@ def create_app(store: Store | None = None) -> Flask:
         who = account()
         app.store.queue_render(who["id"], pid, request.form.get("quality", "draft"),
                                request.form.get("seconds", 90))
+        wake_renderer()
         return redirect(url_for("project_page", pid=pid))
+
+    def wake_renderer() -> None:
+        """Tell a cloud renderer there is work now (SITETWIN_WAKE_URL), rather than at its next look."""
+        url = os.environ.get("SITETWIN_WAKE_URL")
+        if not url:
+            return
+        import json as _json
+        import urllib.request
+        try:
+            req = urllib.request.Request(url, data=_json.dumps({"token": worker_token()}).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            urllib.request.urlopen(req, timeout=4).close()
+        except Exception:                                  # noqa: BLE001 - it will look by itself soon
+            pass
 
     @app.get("/projects/<int:pid>/video/<int:jid>.mp4")
     def video(pid: int, jid: int):

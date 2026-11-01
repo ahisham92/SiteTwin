@@ -65,14 +65,26 @@ def mount_prefix(base: str) -> str:
     return f"{s.scheme}://{s.netloc}"
 
 
+def claim(site: Site) -> dict[str, Any] | None:
+    """The next job and its project, now this worker's; None when nothing is waiting."""
+    got = site.json("POST", "/api/worker/next")
+    return got if got.get("job") else None
+
+
 def work_once(site: Site, workdir: Path, log=print) -> bool:
     """Take one job if there is one. True if a job was handled."""
+    got = claim(site)
+    if got is None:
+        return False
+    handle(site, got, workdir, log)
+    return True
+
+
+def handle(site: Site, got: dict[str, Any], workdir: Path, log=print) -> None:
+    """Render one claimed job here, start to finish, and deliver it (or say why not)."""
     from .render import run
 
-    got = site.json("POST", "/api/worker/next")
-    job = got.get("job")
-    if not job:
-        return False
+    job = got["job"]
     jid = job["id"]
     project = got["project"]
     log(f"Job {jid}: {project['name']} ({job['quality']}, {job['seconds']:.0f} s)")
@@ -109,7 +121,6 @@ def work_once(site: Site, workdir: Path, log=print) -> bool:
             site.json("POST", f"/api/worker/jobs/{jid}/failed", {"message": f"{type(exc).__name__}: {exc}"[:900]})
         except urllib.error.URLError:
             pass
-    return True
 
 
 def serve(base: str, token: str | None = None, workdir: Path | None = None, every: float = 20.0,

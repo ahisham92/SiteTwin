@@ -81,7 +81,11 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str]) -> None:
 
 def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None, radius: float = 350,
         seconds: float = 90, quality: str = "draft", title: str | None = None,
-        when: dt.datetime | None = None, frames: list[int] | None = None, log=print) -> dict[str, Any]:
+        when: dt.datetime | None = None, frames: list[int] | None = None, log=print,
+        chunk: tuple[int, int] | None = None, prepare_only: bool = False) -> dict[str, Any]:
+    """Render the film. ``chunk=(first, last)`` renders only those frames and encodes them as
+    one segment (for splitting a film across several GPUs); ``prepare_only`` fetches the
+    surroundings and plans the timeline, and stops there."""
     from . import environment, model, sequence
     from sitetwin_app import ifc as ifc_text
 
@@ -109,9 +113,11 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     tl = sequence.plan(elements, seconds=seconds, fps=q["fps"])
     (out / "timeline.json").write_text(json.dumps(tl.as_dict(), indent=1))
     log(f"  {len(tl.steps)} steps, {tl.frames} frames")
+    if prepare_only:
+        return {"frames": tl.frames, "fps": q["fps"], "manifest": manifest, "title": title}
 
     from . import scene
-    frames_dir = out / "frames"
+    frames_dir = out / ("frames" if chunk is None else f"frames_{chunk[0]:05d}")
     if frames_dir.exists() and frames is None:
         shutil.rmtree(frames_dir)
     frames_dir.mkdir(exist_ok=True)
@@ -121,7 +127,10 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
 
     import bpy
     sc = bpy.context.scene
-    todo = frames or list(range(1, tl.frames + 1))
+    if chunk is not None:
+        todo = list(range(max(1, chunk[0]), min(tl.frames, chunk[1]) + 1))
+    else:
+        todo = frames or list(range(1, tl.frames + 1))
     t_render = time.time()
     for i, f in enumerate(todo):
         sc.frame_set(f)
@@ -135,14 +144,39 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
 
     result: dict[str, Any] = {"frames": len(todo), "seconds": time.time() - t0, "scene": info,
                               "manifest": manifest}
-    if frames is None:
+    if chunk is not None:
+        segment = out / f"segment_{todo[0]:05d}.mp4"
+        encode(frames_dir, q["fps"], segment, start=todo[0])
+        shutil.rmtree(frames_dir, ignore_errors=True)
+        result["segment"] = str(segment)
+    elif frames is None:
         video = out / (ifc.stem + ".mp4")
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(q["fps"]),
-                        "-i", str(frames_dir / "frame_%05d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                        "-crf", "18", "-preset", "slow", "-movflags", "+faststart", str(video)], check=True)
+        encode(frames_dir, q["fps"], video)
         result["video"] = str(video)
         log(f"Written {video}")
     return result
+
+
+def encode(frames_dir: Path, fps: int, video: Path, start: int = 1) -> None:
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-framerate", str(fps), "-start_number", str(start),
+                    "-i", str(frames_dir / "frame_%05d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-crf", "18", "-preset", "slow", "-movflags", "+faststart", str(video)], check=True)
+
+
+def join(segments: list[Path], video: Path) -> None:
+    """Segments encoded alike are joined without re-encoding."""
+    listing = video.with_suffix(".txt")
+    listing.write_text("".join(f"file '{Path(s).resolve()}'\n" for s in segments))
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing),
+                    "-c", "copy", "-movflags", "+faststart", str(video)], check=True)
+    listing.unlink()
+
+
+def chunks(frames: int, fps: int, gpus: int, min_seconds: float = 15.0) -> list[tuple[int, int]]:
+    """Split frames 1..frames into at most ``gpus`` runs of at least ``min_seconds`` of film."""
+    n = max(1, min(gpus, int(frames // (fps * min_seconds)) or 1))
+    size = -(-frames // n)
+    return [(a, min(frames, a + size - 1)) for a in range(1, frames + 1, size)]
 
 
 def main(argv: list[str] | None = None) -> int:

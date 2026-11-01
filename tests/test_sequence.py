@@ -51,3 +51,11 @@ def test_the_tower_crane_stays_once_it_is_up():
     assert len(w["tower_crane"]) == 1
     assert w["tower_crane"][0][0] == tl.steps[1].start
     assert "piling_rig" in w and w["piling_rig"][0][1] <= tl.steps[1].start + 1
+
+
+def test_a_film_is_split_into_runs_for_several_gpus():
+    from sitetwin_worker.render import chunks
+    runs = chunks(9000, 30, 10)
+    assert len(runs) == 10 and runs[0] == (1, 900) and runs[-1][1] == 9000
+    assert all(b + 1 == c for (_, b), (c, _) in zip(runs, runs[1:]))
+    assert chunks(300, 30, 10) == [(1, 300)]          # ten seconds: not worth splitting
