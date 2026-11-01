@@ -1,0 +1,28 @@
+{# The word for each stage's state, shown under its name. #}
+{% macro stage_word(key, state, p, job) -%}
+  {%- set m = p['model_summary'] -%}
+  {%- if key == 'model' -%}
+    {{ (m['counts'].values()|sum ~ ' elements') if state == 'done' and m else 'Upload the IFC' }}
+  {%- elif key == 'location' -%}
+    {{ ('%.4f, %.4f'|format(p['latitude'], p['longitude'])) if state == 'done' else ('Place it on the map' if state == 'next' else 'After the model') }}
+  {%- elif key == 'sequence' -%}
+    {{ (m['sequence']|length ~ ' steps, storey by storey') if state == 'done' else 'Read from the model' }}
+  {%- else -%}
+    {%- if state == 'active' -%}{{ 'Waiting for a GPU' if job['status'] == 'queued' else 'Rendering ' ~ (job['percent']|round|int) ~ '%' }}
+    {%- elif state == 'done' -%}Ready to watch
+    {%- elif state == 'failed' -%}Last try failed
+    {%- elif state == 'next' -%}Make the film
+    {%- else -%}After the location{%- endif -%}
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro status_badge(p) -%}
+  {%- set j = p['job'] -%}
+  {%- if j and j['status'] == 'running' -%}<span class="badge warning"><span class="pulse"></span>Rendering {{ j['percent']|round|int }}%</span>
+  {%- elif j and j['status'] == 'queued' -%}<span class="badge warning"><span class="pulse"></span>Waiting for a GPU</span>
+  {%- elif p['done'] -%}<span class="badge good">● Film ready</span>
+  {%- elif j and j['status'] == 'failed' -%}<span class="badge critical">■ Render failed</span>
+  {%- elif not p['model_name'] -%}<span class="badge">Needs the model</span>
+  {%- elif p['latitude'] is none -%}<span class="badge">Needs the location</span>
+  {%- else -%}<span class="badge">Ready to render</span>{%- endif -%}
+{%- endmacro %}

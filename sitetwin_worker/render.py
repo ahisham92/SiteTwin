@@ -82,7 +82,8 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str]) -> None:
 def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None, radius: float = 350,
         seconds: float = 90, quality: str = "draft", title: str | None = None,
         when: dt.datetime | None = None, frames: list[int] | None = None, log=print,
-        chunk: tuple[int, int] | None = None, prepare_only: bool = False) -> dict[str, Any]:
+        chunk: tuple[int, int] | None = None, prepare_only: bool = False,
+        on_stage=None, on_frame=None) -> dict[str, Any]:
     """Render the film. ``chunk=(first, last)`` renders only those frames and encodes them as
     one segment (for splitting a film across several GPUs); ``prepare_only`` fetches the
     surroundings and plans the timeline, and stops there."""
@@ -99,17 +100,21 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     title = title or summary.project or ifc.stem
     q = dict(QUALITY[quality])
 
+    stage = on_stage or (lambda name: None)
+    stage("starting")
     log(f"Reading {ifc.name}…")
     elements = model.load(ifc)
     if not elements:
         raise SystemExit("No geometry could be read from the model.")
     log(f"  {len(elements)} elements")
 
+    stage("surroundings")
     log(f"Fetching the surroundings of {lat:.5f}, {lon:.5f} (radius {radius:.0f} m)…")
     manifest = environment.gather(lat, lon, radius, out / "environment")
     for k, why in manifest.get("missing", {}).items():
         log(f"  no {k}: {why}")
 
+    stage("scene")
     tl = sequence.plan(elements, seconds=seconds, fps=q["fps"])
     (out / "timeline.json").write_text(json.dumps(tl.as_dict(), indent=1))
     log(f"  {len(tl.steps)} steps, {tl.frames} frames")
@@ -132,18 +137,22 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     else:
         todo = frames or list(range(1, tl.frames + 1))
     t_render = time.time()
+    stage("frames")
     for i, f in enumerate(todo):
         sc.frame_set(f)
         path = frames_dir / f"frame_{f:05d}.png"
         sc.render.filepath = str(path)
         bpy.ops.render.render(write_still=True)
         caption(path, f, tl, title, manifest.get("credits", []))
+        if on_frame:
+            on_frame(i + 1, len(todo), path)
         if i == 0 or (i + 1) % 25 == 0:
             per = (time.time() - t_render) / (i + 1)
             log(f"  frame {f} ({i + 1}/{len(todo)}), {per:.1f} s a frame, ~{per * (len(todo) - i - 1) / 60:.0f} min to go")
 
     result: dict[str, Any] = {"frames": len(todo), "seconds": time.time() - t0, "scene": info,
                               "manifest": manifest}
+    stage("joining")
     if chunk is not None:
         segment = out / f"segment_{todo[0]:05d}.mp4"
         encode(frames_dir, q["fps"], segment, start=todo[0])

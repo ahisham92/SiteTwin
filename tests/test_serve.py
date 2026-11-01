@@ -29,10 +29,14 @@ def test_the_worker_takes_a_job_and_delivers_the_film(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_run(ifc, out, lat, lon, seconds, quality, title, log):
+    def fake_run(ifc, out, lat, lon, seconds, quality, title, log, on_stage, on_frame):
         seen.update(ifc=Path(ifc).read_bytes()[:12], lat=lat, quality=quality, title=title)
-        log("  frame 10 (1/2), 1.0 s a frame, ~0 min to go")
+        on_stage("frames")
         out.mkdir(parents=True, exist_ok=True)
+        frame = out / "frame_00001.png"
+        from PIL import Image
+        Image.new("RGB", (64, 36), "grey").save(frame)
+        on_frame(1, 2, frame)
         video = out / "film.mp4"
         video.write_bytes(b"\x00\x00\x00\x18ftypmp42")
         return {"video": str(video), "manifest": {"missing": {"osm": "blocked"}}}
@@ -47,3 +51,35 @@ def test_the_worker_takes_a_job_and_delivers_the_film(tmp_path, monkeypatch):
     assert seen["ifc"] == b"ISO-10303-21" and seen["quality"] == "preview" and seen["title"] == "Berth 3"
     job = c.get(f"/api/projects/{pid}").json["job"]
     assert job["status"] == "done" and job["worker"] == "test-pc" and "osm" in job["message"]
+
+
+def test_the_page_sees_the_stage_and_the_latest_frame(tmp_path, monkeypatch):
+    import pytest
+    from PIL import Image
+    monkeypatch.setenv("SITETWIN_WORKER_TOKEN", "tok")
+    app = create_app(Store(tmp_path / "site"))
+    c = app.test_client()
+    c.environ_base[SITE_KEY] = {"id": "7", "name": "A", "login": "a"}
+    pid = int(c.post("/projects", data={"name": "P"}).headers["Location"].split("/")[-1])
+    c.post(f"/projects/{pid}/model", data={"model": (io.BytesIO(SMALL), "b.ifc")},
+           content_type="multipart/form-data")
+    c.post(f"/projects/{pid}/render", data={"quality": "preview", "seconds": "20"})
+    server = make_server("127.0.0.1", 0, app)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        site = serve_mod.Site(f"http://127.0.0.1:{server.server_port}", "tok", "pc")
+        jid = serve_mod.claim(site)["job"]["id"]
+        rep = serve_mod.Reporter(site, jid, preview_every=0)
+        rep.stage("surroundings")
+        assert c.get(f"/api/projects/{pid}").json["job"]["stage"] == "surroundings"
+        Image.new("RGB", (64, 36), "grey").save(tmp_path / "f.png")
+        rep.preview(tmp_path / "f.png")
+        rep.frames(10, 100, 2, 0.05, force=True)
+        job = c.get(f"/api/projects/{pid}").json["job"]
+        assert job["frames_done"] == 10 and job["gpus"] == 2 and job["preview_url"]
+        assert c.get(job["preview_url"]).status_code == 200
+        c.post(f"/projects/{pid}/jobs/{jid}/cancel")
+        with pytest.raises(serve_mod.Stopped):
+            rep.frames(11, 100, force=True)
+    finally:
+        server.shutdown()

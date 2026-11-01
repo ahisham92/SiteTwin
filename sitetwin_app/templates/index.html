@@ -1,26 +1,65 @@
 {% extends "base.html" %}
+{% from "_bits.html" import status_badge %}
 {% block content %}
-<h1>Projects</h1>
-<p class="muted">Each project takes an IFC model from Revit, sets it in the real surroundings of
-its site, and plays the build back as a video of a few minutes, with the plant and the people doing it.</p>
+<div class="page-head">
+  <div>
+    <h1>SiteTwin</h1>
+    <p class="small muted" style="margin-top:2px">Your Revit model, built in its real surroundings, as a film with the cranes, trucks and crews that build it.</p>
+  </div>
+  <form class="new-project" method="post" action="{{ url_for('new_project') }}">
+    <input name="name" required maxlength="200" placeholder="Name the new project, e.g. Jiyeh tower" aria-label="Project name">
+    <button class="btn btn-primary">New project</button>
+  </form>
+</div>
 
-<form class="card new" method="post" action="{{ url_for('new_project') }}">
-  <label>New project <input name="name" required maxlength="200" placeholder="e.g. Sibline Port berth 3"></label>
-  <button>Create</button>
-</form>
+<div class="grid grid-3" style="margin-bottom:16px">
+  <div class="tile"><p class="tile-label">Projects</p><p class="tile-value">{{ projects|length }}</p>
+    <p class="tile-foot"><span class="muted">{{ projects|selectattr('model_name')|list|length }} with a model</span></p></div>
+  <div class="tile"><p class="tile-label">Films made</p><p class="tile-value">{{ films }}</p>
+    <p class="tile-foot"><span class="muted">rendered on cloud GPUs</span></p></div>
+  <div class="tile" data-machine><p class="tile-label">Render machine</p>
+    {% if not machine['configured'] %}
+      <p class="tile-value">Not set up</p><p class="tile-foot"><span class="state-warning">▲ The site has no worker token yet</span></p>
+    {% elif machine['awake'] %}
+      <p class="tile-value">Ready</p><p class="tile-foot"><span class="state-good">● Checked in {{ (machine['seen_ago'] // 60)|int }} min ago</span></p>
+    {% elif machine['seen_ago'] is not none %}
+      <p class="tile-value">Asleep</p><p class="tile-foot"><span class="muted">Wakes when a film is asked for</span></p>
+    {% else %}
+      <p class="tile-value">Waiting</p><p class="tile-foot"><span class="muted">It has not checked in yet</span></p>
+    {% endif %}
+  </div>
+</div>
 
 {% if projects %}
-<ul class="projects">
+<div class="projects">
   {% for p in projects %}
-  {% set s = p['states'] %}
-  <li class="card">
-    <a href="{{ url_for('project_page', pid=p['id']) }}"><strong>{{ p['name'] }}</strong></a>
-    <span class="muted">{{ p['model_name'] or 'No model yet' }}</span>
-    <span class="pips">{% for k in ['model','location','environment','sequence','video'] %}<i class="pip {{ s[k] }}" title="{{ k }}: {{ s[k] }}"></i>{% endfor %}</span>
-  </li>
+  {% set pic = tile_url(p['latitude'], p['longitude']) %}
+  <a class="card project" href="{{ url_for('project_page', pid=p['id']) }}"
+     {% if p['job'] and p['job']['status'] in ('queued','running') %}data-live="{{ url_for('project_state', pid=p['id']) }}"{% endif %}>
+    <div class="project-pic{{ '' if pic else ' none' }}" {% if pic %}style="background-image:url('{{ pic }}')"{% endif %}>
+      {% if not pic %}No location yet{% endif %}
+      <span data-badge>{{ status_badge(p) }}</span>
+    </div>
+    <div class="project-body">
+      <div><strong>{{ p['name'] }}</strong>
+        <p class="small muted">{{ p['model_name'] or 'No model yet' }}{% if p['model_summary'] %} · {{ p['model_summary']['counts'].values()|sum }} elements, {{ p['model_summary']['storeys']|length }} storeys{% endif %}</p></div>
+      <div class="pips" aria-label="Progress">{% for k in ['model','location','sequence','video'] %}<i class="pip {{ p['states'][k] }}" title="{{ k|title }}: {{ p['states'][k] }}"></i>{% endfor %}</div>
+    </div>
+  </a>
   {% endfor %}
-</ul>
+</div>
 {% else %}
-<p class="muted">No projects yet.</p>
+<div class="card">
+  <div class="card-head"><h2>How it works</h2></div>
+  <div class="card-body">
+    <ol class="how" style="padding:0;margin:0">
+      <li><b>Upload the IFC</b><span class="small muted">Export it from Revit: File › Export › IFC.</span></li>
+      <li><b>Place it on the map</b><span class="small muted">Read from the model's survey point, or drop the pin yourself.</span></li>
+      <li><b>Check the sequence</b><span class="small muted">See it go up in 3D, storey by storey, before any film is made.</span></li>
+      <li><b>Make the film</b><span class="small muted">Rendered on cloud GPUs in the real surroundings. You see it as it is made.</span></li>
+    </ol>
+    <p class="small muted mt">Name your first project above to start.</p>
+  </div>
+</div>
 {% endif %}
 {% endblock %}

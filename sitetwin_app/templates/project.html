@@ -1,92 +1,228 @@
 {% extends "base.html" %}
+{% from "_bits.html" import stage_word %}
 {% block title %}{{ p['name'] }} · SiteTwin{% endblock %}
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">
+<script type="importmap">{"imports": {"three": "{{ url_for('static', filename='vendor/three/three.module.min.js') }}"}}</script>
+{% endblock %}
 {% block content %}
-<p><a href="{{ url_for('home') }}">← Projects</a></p>
-<h1>{{ p['name'] }}</h1>
+{% set m = p['model_summary'] %}
+{% set job = s['job'] %}
+{% set done = s['done'] %}
+<div class="page-head">
+  <div>
+    <p class="small crumb"><a href="{{ url_for('home') }}">SiteTwin</a> /</p>
+    <h1 data-name>{{ p['name'] }}</h1>
+    <p class="small muted page-meta" data-meta>
+      {% if p['model_name'] %}<span>{{ p['model_name'] }}</span>{% endif %}
+      {% if m %}<span>{{ m['counts'].values()|sum }} elements</span><span>{{ m['storeys']|length }} storeys</span>{% endif %}
+      {% if p['latitude'] is not none %}<span>{{ '%.5f, %.5f'|format(p['latitude'], p['longitude']) }}</span>{% endif %}
+      {% if not p['model_name'] %}<span>Start by uploading the model</span>{% endif %}
+    </p>
+  </div>
+  <div class="row">
+    <button type="button" class="btn btn-primary" data-next-action></button>
+  </div>
+</div>
 
-<ol class="stages">
+<ol class="steps" role="tablist" aria-label="Stages">
   {% for key, name, what in stages %}
-  <li class="stage {{ states[key] }}"><strong>{{ name }}</strong><span>{{ what }}</span><em>{{ states[key] }}</em></li>
+  <li class="step {{ states[key] }}" data-step="{{ key }}">
+    <button type="button" role="tab" aria-controls="pane-{{ key }}" title="{{ what }}">
+      <span class="step-mark">{{ '✓' if states[key] == 'done' else loop.index }}</span>
+      <span class="step-name">{{ name }}</span>
+      <span class="step-state" data-step-state>{{ stage_word(key, states[key], p, job) }}</span>
+    </button>
+  </li>
   {% endfor %}
 </ol>
 
-<section class="card">
-  <h2>Model</h2>
-  {% set m = p['model_summary'] %}
-  {% if m %}
-    <p><strong>{{ p['model_name'] }}</strong> · {{ m['schema'] }}{% if m['project'] %} · {{ m['project'] }}{% endif %}</p>
-    <table><thead><tr><th>Element</th><th>Count</th></tr></thead><tbody>
-      {% for kind, n in m['counts'].items() %}<tr><td>{{ kind[3:]|title }}</td><td>{{ n }}</td></tr>{% endfor %}
-    </tbody></table>
-  {% endif %}
-  <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_model', pid=p['id']) }}">
-    <label>{{ 'Replace the model' if m else 'Upload the IFC model' }} <input type="file" name="model" accept=".ifc" required></label>
-    <button>Upload</button>
+{# ---- 1. Model -------------------------------------------------------- #}
+<section class="pane" id="pane-model" data-pane="model">
+  <div class="card">
+    <div class="card-head"><div><h2>The model</h2>
+      <p class="small muted" style="margin-top:2px">The IFC exported from Revit. Its elements, storeys and survey point are read as soon as it is uploaded.</p></div></div>
+    <div class="card-body stack">
+      {% if m %}
+      <div class="grid grid-4">
+        <div class="tile"><p class="tile-label">Elements</p><p class="tile-value">{{ m['counts'].values()|sum }}</p><p class="tile-foot"><span class="muted">{{ m['counts']|length }} kinds</span></p></div>
+        <div class="tile"><p class="tile-label">Storeys</p><p class="tile-value">{{ m['storeys']|length }}</p><p class="tile-foot"><span class="muted">{% if m['storeys'] %}{{ m['storeys'][0]['name'] }} to {{ m['storeys'][-1]['name'] }}{% endif %}</span></p></div>
+        <div class="tile"><p class="tile-label">Build steps</p><p class="tile-value">{{ m['sequence']|length }}</p><p class="tile-foot"><span class="muted">drafted from the model</span></p></div>
+        <div class="tile"><p class="tile-label">Location in the model</p><p class="tile-value">{{ 'Yes' if m['latitude'] is not none else 'No' }}</p>
+          <p class="tile-foot">{% if m['latitude'] is not none %}<span class="state-good">● read from the survey point</span>{% else %}<span class="state-warning">▲ place it on the map</span>{% endif %}</p></div>
+      </div>
+      <div class="grid grid-2">
+        <div class="table-scroll"><table>
+          <thead><tr><th>Element</th><th class="right">Count</th></tr></thead>
+          <tbody>{% for kind, n in m['counts'].items() %}<tr><td>{{ kind[3:]|title }}</td><td class="right tabular">{{ n }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Storey</th><th class="right">Level (m)</th><th class="right">Elements</th></tr></thead>
+          <tbody>{% for st in m['storeys'] %}<tr><td>{{ st['name'] }}</td><td class="right tabular">{{ '%.2f'|format(st['elevation']) }}</td><td class="right tabular">{{ st['elements'] }}</td></tr>{% endfor %}</tbody>
+        </table></div>
+      </div>
+      {% endif %}
+      <form class="upload" method="post" enctype="multipart/form-data" action="{{ url_for('upload_model', pid=p['id']) }}">
+        <label class="drop{{ ' slim' if m else '' }}">
+          <input type="file" name="model" accept=".ifc" required>
+          <span class="drop-icon" aria-hidden="true">⬆</span>
+          <span><span class="drop-title">{{ 'Replace the model' if m else 'Drop the IFC file here, or click to choose it' }}</span><br>
+          <span class="small muted">In Revit: File › Export › IFC. Up to 500 MB.{% if m %} The current one is {{ p['model_name'] }}.{% endif %}</span></span>
+        </label>
+        <noscript><button class="btn btn-primary mt-sm">Upload</button></noscript>
+        <div class="upload-state hidden">
+          <div class="row between small"><span data-upload-word>Uploading</span><span class="tabular" data-upload-num></span></div>
+          <div class="bar mt-sm"><div class="bar-fill" data-upload-bar style="width:0"></div></div>
+        </div>
+      </form>
+    </div>
+  </div>
+</section>
+
+{# ---- 2. Location ----------------------------------------------------- #}
+<section class="pane" id="pane-location" data-pane="location">
+  <div class="card">
+    <div class="card-head"><div><h2>Where it stands</h2>
+      <p class="small muted" style="margin-top:2px">Click the map or drag the pin to the middle of the site. The circle is the area rebuilt around it: terrain, buildings, roads, trees and water.</p></div>
+      <span class="small muted" data-where-from>{% if p['location_from'] == 'ifc' %}From the model{% elif p['location_from'] == 'typed' %}Placed by you{% endif %}</span></div>
+    <div class="card-body split">
+      <div class="map" data-map='{{ {"lat": p["latitude"], "lon": p["longitude"]}|tojson }}'></div>
+      <form class="map-side" method="post" action="{{ url_for('set_location', pid=p['id']) }}" data-location>
+        <label class="field" style="position:relative"><span class="field-label">Find a place</span>
+          <input type="search" placeholder="A town, a street, a landmark" data-search autocomplete="off">
+          <ul class="place-results hidden" data-results></ul></label>
+        <div class="grid grid-2">
+          <label class="field"><span class="field-label">Latitude</span><input name="latitude" inputmode="decimal" required value="{{ p['latitude'] if p['latitude'] is not none else '' }}"></label>
+          <label class="field"><span class="field-label">Longitude</span><input name="longitude" inputmode="decimal" required value="{{ p['longitude'] if p['longitude'] is not none else '' }}"></label>
+        </div>
+        <label class="field"><span class="field-label">Ground level (m above sea), optional</span>
+          <input name="elevation" inputmode="decimal" value="{{ p['elevation'] if p['elevation'] is not none else '' }}">
+          <span class="field-hint">Left empty, it is read from the terrain.</span></label>
+        <div class="row"><button class="btn btn-primary">Save the location</button><span class="saved-note" data-saved></span></div>
+        <p class="small muted">Saved by itself when you move the pin.</p>
+      </form>
+    </div>
+  </div>
+</section>
+
+{# ---- 3. Sequence ----------------------------------------------------- #}
+<section class="pane" id="pane-sequence" data-pane="sequence">
+  <div class="card">
+    <div class="card-head"><div><h2>The build sequence</h2>
+      <p class="small muted" style="margin-top:2px">Drafted from the model: storey by storey from the ground up, and in each storey foundations, columns and walls, beams, slabs, then the envelope. Press play to watch it go up; drag to turn, scroll to zoom.</p></div></div>
+    <div class="card-body">
+      {% if m and m['sequence'] %}
+      <div class="split">
+        <div>
+          <div class="viewer" data-viewer data-model="{{ url_for('model_file', pid=p['id']) }}" data-steps="{{ url_for('steps', pid=p['id']) }}"
+               data-web-ifc="https://cdn.jsdelivr.net/npm/web-ifc@0.0.66/" data-lat="{{ p['latitude'] if p['latitude'] is not none else '' }}" data-lon="{{ p['longitude'] if p['longitude'] is not none else '' }}">
+            <div class="viewer-msg" data-viewer-msg><span>The 3D preview opens when you come to this tab.</span></div>
+            <div class="viewer-label hidden" data-viewer-label></div>
+          </div>
+          <div class="player">
+            <button type="button" class="btn btn-primary btn-sm" data-play disabled>▶ Play</button>
+            <input type="range" min="0" max="{{ m['sequence']|length }}" value="{{ m['sequence']|length }}" data-scrub disabled aria-label="Build step">
+            <span class="small tabular muted" data-scrub-word>{{ m['sequence']|length }} / {{ m['sequence']|length }}</span>
+          </div>
+        </div>
+        <ol class="step-list" data-step-list>
+          {% for st in m['sequence'] %}
+          <li data-n="{{ st['step'] }}"><button type="button"><span class="n">{{ st['step'] }}</span><span>{{ st['phase'] }}<br><span class="small muted">{{ st['storey'] }}</span></span><span class="small muted tabular">{{ st['elements'] }}</span></button></li>
+          {% endfor %}
+        </ol>
+      </div>
+      {% else %}
+        <p class="muted">The sequence is drafted from the model. Upload it first.</p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+{# ---- 4. Video -------------------------------------------------------- #}
+<section class="pane" id="pane-video" data-pane="video">
+  <div class="stack">
+    <div class="card {{ '' if job and job['status'] in ('queued','running') else 'hidden' }}" data-live-card>
+      <div class="card-head"><div><h2><span class="pulse"></span><span data-live-title>Making the film</span></h2>
+        <p class="small muted" style="margin-top:2px" data-live-sub></p></div>
+        <form method="post" data-cancel action="{{ url_for('cancel_job', pid=p['id'], jid=job['id']) if job else '' }}"><button class="btn btn-ghost btn-sm">Stop</button></form></div>
+      <div class="card-body live">
+        <div class="frame" data-frame><span data-frame-word>The first frames appear here as they are rendered.</span></div>
+        <div class="stack">
+          <div><span class="big-num" data-pct>0%</span>
+            <div class="bar mt-sm"><div class="bar-fill" data-pct-bar style="width:0"></div></div>
+            <p class="small muted mt-sm tabular" data-numbers></p></div>
+          <ol class="timeline" data-timeline>
+            <li data-k="queued">Waiting for a cloud GPU</li>
+            <li data-k="starting">Reading the model</li>
+            <li data-k="surroundings">Fetching the real surroundings</li>
+            <li data-k="scene">Building the scene and the sequence</li>
+            <li data-k="frames">Rendering the frames</li>
+            <li data-k="joining">Joining the film</li>
+            <li data-k="uploading">Sending it here</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <div class="card {{ '' if done else 'hidden' }}" data-film-card>
+      <div class="card-head"><div><h2>The film</h2><p class="small muted" style="margin-top:2px" data-film-meta>
+        {% if done %}{{ done['quality']|title }}, {{ done['seconds']|int }} s{% if done['message'] %} · {{ done['message'] }}{% endif %}{% endif %}</p></div>
+        <a class="btn btn-ghost btn-sm" data-download {% if done %}href="{{ done['video_url'] }}"{% endif %} download>Download MP4</a></div>
+      <div class="card-body film">
+        <video controls preload="metadata" playsinline data-video {% if done %}src="{{ done['video_url'] }}"{% endif %}></video>
+      </div>
+    </div>
+
+    <div class="card" data-make-card>
+      <div class="card-head"><div><h2 data-make-title>{{ 'Make it again' if done else 'Make the film' }}</h2>
+        <p class="small muted" style="margin-top:2px">Rendered in the cloud on GPUs that run only while your film is made. Leave the page open to watch it come together, or come back later.</p></div></div>
+      <div class="card-body">
+        {% if p['model_name'] and p['latitude'] is not none %}
+        <form method="post" action="{{ url_for('render_video', pid=p['id']) }}" class="stack" data-render>
+          <fieldset class="choices">
+            <legend class="field-label">Quality</legend>
+            {% for key, name, size, what, fps, per in QUALITY_CHOICES %}
+            <label class="choice"><input type="radio" name="quality" value="{{ key }}" {{ 'checked' if key == 'draft' }}>
+              <span><b>{{ name }}</b><span class="small muted">{{ size }}</span><br><span class="small ink2">{{ what }}</span></span></label>
+            {% endfor %}
+          </fieldset>
+          <label class="field"><span class="field-label">Length</span>
+            <span class="length"><input type="range" name="seconds" min="15" max="300" step="15" value="90" data-length><output data-length-word>1 min 30 s</output></span></label>
+          <div class="estimate" data-estimate>
+            <span>About <b data-est-min>{{ estimates['draft']['minutes'] }} min</b> to make</span>
+            <span>on <b data-est-gpus>{{ estimates['draft']['gpus'] }}</b> GPUs</span>
+            <span>about <b data-est-cost>${{ '%.2f'|format(estimates['draft']['cost']) }}</b></span>
+            <span class="muted" data-est-frames>{{ estimates['draft']['frames'] }} frames</span>
+          </div>
+          <div class="row"><button class="btn btn-primary" data-render-button {{ 'disabled' if job and job['status'] in ('queued','running') }}>{{ 'Make it again' if done else 'Make the film' }}</button>
+            <span class="small muted" data-machine-word></span></div>
+        </form>
+        {% else %}
+          <p class="muted">{{ 'Upload the model first.' if not p['model_name'] else 'Place it on the map first: the surroundings are rebuilt from the location.' }}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card {{ '' if s['history']|length > 0 else 'hidden' }}" data-history-card>
+      <div class="card-head"><h2>Every film of this project</h2></div>
+      <div class="card-body flush table-scroll"><table>
+        <thead><tr><th>Asked</th><th>Quality</th><th class="right">Length</th><th>Result</th><th></th></tr></thead>
+        <tbody data-history></tbody>
+      </table></div>
+    </div>
+  </div>
+</section>
+
+<div class="danger-zone">
+  <form method="post" action="{{ url_for('delete_project', pid=p['id']) }}" data-confirm="Delete {{ p['name'] }}, its model and its films?">
+    <button class="btn btn-danger btn-sm">Delete this project</button>
   </form>
-</section>
-
-<section class="card">
-  <h2>Location</h2>
-  {% if p['latitude'] is not none %}
-    <p>{{ '%.6f'|format(p['latitude']) }}, {{ '%.6f'|format(p['longitude']) }}{% if p['elevation'] is not none %} · {{ p['elevation'] }} m{% endif %}
-       <span class="muted">({{ 'from the model' if p['location_from'] == 'ifc' else 'typed in' }})</span>
-       · <a href="https://www.openstreetmap.org/?mlat={{ p['latitude'] }}&mlon={{ p['longitude'] }}#map=17/{{ p['latitude'] }}/{{ p['longitude'] }}" target="_blank" rel="noopener">See it on the map</a></p>
-  {% else %}
-    <p class="muted">The model did not say where it is. Set the Revit project's survey point / site location before exporting, or type it here.</p>
-  {% endif %}
-  <form method="post" action="{{ url_for('set_location', pid=p['id']) }}" class="row">
-    <label>Latitude <input name="latitude" inputmode="decimal" required value="{{ p['latitude'] if p['latitude'] is not none else '' }}"></label>
-    <label>Longitude <input name="longitude" inputmode="decimal" required value="{{ p['longitude'] if p['longitude'] is not none else '' }}"></label>
-    <label>Elevation (m) <input name="elevation" inputmode="decimal" value="{{ p['elevation'] if p['elevation'] is not none else '' }}"></label>
-    <button>Save location</button>
-  </form>
-</section>
-
-{% if m and m['sequence'] %}
-<section class="card">
-  <h2>Draft sequence</h2>
-  <p class="muted">Read from the model: storey by storey, bottom up, each storey's elements in the order they are built. It is the starting point the planner edits; plant and crews are added per step in the next stage.</p>
-  <table><thead><tr><th>#</th><th>Storey</th><th>Work</th><th>Elements</th></tr></thead><tbody>
-    {% for s in m['sequence'] %}<tr><td>{{ s['step'] }}</td><td>{{ s['storey'] }}</td><td>{{ s['phase'] }}</td><td>{{ s['elements'] }}</td></tr>{% endfor %}
-  </tbody></table>
-</section>
-{% endif %}
-
-<section class="card">
-  <h2>Video</h2>
-  {% if done %}
-    <video controls preload="metadata" src="{{ url_for('video', pid=p['id'], jid=done['id']) }}"></video>
-    <p class="muted">{{ done['quality']|title }}, {{ done['seconds']|int }} s{% if done['message'] %} · {{ done['message'] }}{% endif %}
-      · <a href="{{ url_for('video', pid=p['id'], jid=done['id']) }}" download>Download MP4</a></p>
-  {% endif %}
-  {% if job and job['status'] in ('queued', 'running') %}
-    <p><strong>{{ 'Waiting for the render machine' if job['status'] == 'queued' else 'Rendering' }}</strong>
-      {% if job['status'] == 'running' %}· {{ job['percent']|round|int }}% · {{ job['message'] }}{% endif %}</p>
-    <div class="bar-track"><div class="bar-fill" style="width: {{ job['percent'] }}%"></div></div>
-    <p class="muted small">Refresh to see how it is going.</p>
-  {% else %}
-    {% if job and job['status'] == 'failed' %}<p class="error">The last render failed: {{ job['message'] }}</p>{% endif %}
-    {% if p['model_name'] and p['latitude'] is not none %}
-    <form method="post" action="{{ url_for('render_video', pid=p['id']) }}" class="row">
-      <label>Quality
-        <select name="quality">
-          <option value="preview">Preview (640×360, quick)</option>
-          <option value="draft" selected>Draft (1280×720)</option>
-          <option value="final">Final (1920×1080)</option>
-          <option value="4k">4K (3840×2160)</option>
-        </select></label>
-      <label>Length (seconds) <input name="seconds" type="number" min="10" max="600" value="90"></label>
-      <button>{{ 'Make the video again' if done else 'Make the video' }}</button>
-    </form>
-    <p class="muted small">The surroundings are fetched from the location, the build is sequenced from the model,
-      and the film is rendered on the render machine{% if not worker_set %} (none is connected to this site yet){% endif %}.</p>
-    {% else %}
-    <p class="muted">Upload the model and set the location to make the video.</p>
-    {% endif %}
-  {% endif %}
-</section>
-
-<form method="post" action="{{ url_for('delete_project', pid=p['id']) }}" class="danger">
-  <button>Delete this project</button>
-</form>
+</div>
+<script type="application/json" id="state">{{ s|tojson }}</script>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
+<script src="{{ url_for('static', filename='sitetwin-project.js') }}" data-pid="{{ p['id'] }}"
+        data-state-url="{{ url_for('project_state', pid=p['id']) }}" data-estimate-url="{{ url_for('project_estimate', pid=p['id']) }}"
+        data-viewer-js="{{ url_for('static', filename='sitetwin-viewer.js') }}"></script>
 {% endblock %}

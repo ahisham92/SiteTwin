@@ -45,13 +45,14 @@ class Site:
             while chunk := r.read(1 << 20):
                 f.write(chunk)
 
-    def upload(self, path: str, field: str, file: Path, extra: dict[str, str] | None = None) -> dict[str, Any]:
+    def upload(self, path: str, field: str, file: Path, extra: dict[str, str] | None = None,
+               ctype: str = "video/mp4") -> dict[str, Any]:
         boundary = uuid.uuid4().hex
         parts = []
         for k, v in (extra or {}).items():
             parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n".encode())
         parts.append(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{field}\"; filename=\"{file.name}\"\r\n"
-                     f"Content-Type: video/mp4\r\n\r\n".encode())
+                     f"Content-Type: {ctype}\r\n\r\n".encode())
         body = b"".join(parts) + file.read_bytes() + f"\r\n--{boundary}--\r\n".encode()
         with self._req("POST", path, body, f"multipart/form-data; boundary={boundary}") as r:
             return json.loads(r.read())
@@ -63,6 +64,61 @@ def mount_prefix(base: str) -> str:
     from urllib.parse import urlsplit
     s = urlsplit(base)
     return f"{s.scheme}://{s.netloc}"
+
+
+class Stopped(Exception):
+    """The site says the job is no longer running: the person stopped it."""
+
+
+class Reporter:
+    """Tells the site how a job is going: its stage, its frames, and now and then the latest
+    frame as a small JPEG, so the page follows the film as it is made. Best effort, except that
+    a job the site has stopped raises Stopped, so the render does not go on for nothing."""
+
+    STAGE_PERCENT = {"starting": 2, "surroundings": 4, "scene": 7, "frames": 8, "joining": 97, "uploading": 99}
+    STAGE_WORDS = {"starting": "Reading the model", "surroundings": "Fetching the real surroundings",
+                   "scene": "Building the scene and planning the sequence", "frames": "Rendering the frames",
+                   "joining": "Joining the film", "uploading": "Sending the film to the site"}
+
+    def __init__(self, site: Site, jid: int, preview_every: float = 30.0):
+        self.site, self.jid, self.preview_every = site, jid, preview_every
+        self.last_post = 0.0
+        self.last_preview = 0.0
+
+    def send(self, percent: float, message: str, **more: Any) -> None:
+        self.last_post = time.time()
+        try:
+            self.site.json("POST", f"/api/worker/jobs/{self.jid}/progress",
+                           {"percent": percent, "message": message[:200], **more})
+        except urllib.error.HTTPError as exc:
+            if exc.code == 409:
+                raise Stopped() from exc
+        except urllib.error.URLError:
+            pass
+
+    def stage(self, name: str) -> None:
+        self.send(self.STAGE_PERCENT.get(name, 5), self.STAGE_WORDS.get(name, name), stage=name)
+
+    def frames(self, done: int, total: int, gpus: int = 1, cost: float | None = None, force: bool = False) -> None:
+        if not force and time.time() - self.last_post < 10:
+            return
+        self.send(8 + 89 * done / max(1, total), f"Rendering frame {done:,} of {total:,} on {gpus} GPU{'s' if gpus > 1 else ''}",
+                  stage="frames", frames_done=done, frames_total=total, gpus=gpus, cost=cost)
+
+    def preview(self, frame: Path) -> None:
+        if time.time() - self.last_preview < self.preview_every:
+            return
+        self.last_preview = time.time()
+        try:
+            from PIL import Image
+            small = frame.with_name("preview.jpg")
+            with Image.open(frame) as im:
+                im = im.convert("RGB")
+                im.thumbnail((960, 540))
+                im.save(small, quality=82)
+            self.site.upload(f"/api/worker/jobs/{self.jid}/preview", "frame", small, ctype="image/jpeg")
+        except Exception:                                  # noqa: BLE001 - a preview is a nicety
+            pass
 
 
 def claim(site: Site) -> dict[str, Any] | None:
@@ -91,30 +147,24 @@ def handle(site: Site, got: dict[str, Any], workdir: Path, log=print) -> None:
     folder = workdir / f"project_{project['id']}"
     folder.mkdir(parents=True, exist_ok=True)
     ifc = folder / "model.ifc"
-    last = [0.0]
+    rep = Reporter(site, jid)
 
-    def report(msg: str) -> None:
-        log(msg)
-        pct = None
-        if msg.strip().startswith("frame ") and "/" in msg:
-            done, total = msg.split("(")[1].split(")")[0].split("/")
-            pct = 10 + 88 * int(done) / int(total)
-        if time.time() - last[0] > 20 or pct is None:
-            last[0] = time.time()
-            try:
-                site.json("POST", f"/api/worker/jobs/{jid}/progress",
-                          {"percent": pct if pct is not None else 5, "message": msg.strip()[:200]})
-            except urllib.error.URLError:
-                pass
+    def frame(done: int, total: int, path: Path) -> None:
+        rep.frames(done, total)
+        rep.preview(path)
 
     try:
         site.download(mount_prefix(site.base) + got["model_url"], ifc)
         result = run(ifc, folder / f"job_{jid}", project["latitude"], project["longitude"],
-                     seconds=job["seconds"], quality=job["quality"], title=project["name"], log=report)
+                     seconds=job["seconds"], quality=job["quality"], title=project["name"], log=log,
+                     on_stage=rep.stage, on_frame=frame)
+        rep.stage("uploading")
         missing = result["manifest"].get("missing", {})
         note = ("Without " + ", ".join(missing) + " (could not be fetched).") if missing else ""
         site.upload(f"/api/worker/jobs/{jid}/video", "video", Path(result["video"]), {"message": note})
         log(f"Job {jid} delivered")
+    except Stopped:
+        log(f"Job {jid} was stopped on the site")
     except Exception as exc:                              # noqa: BLE001 - reported to the site
         traceback.print_exc()
         try:
