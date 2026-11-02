@@ -178,7 +178,10 @@ def plan(xyz: np.ndarray, colour: np.ndarray, steep: np.ndarray, feats: list[dic
         if not any(_seg_dist(a, b) < radius for a, b in zip(pts[:-1], pts[1:])):
             continue
         roads.append({"points": pts, "width": float(f.get("width", 6.0)), "class": f.get("class")})
-    return {"z": z, "buildings": buildings, "roads": roads, "trees": trees, "grid": (grid, origin, cell)}
+    greens = [f["points"] for f in feats if f.get("kind") == "green" and f.get("use") != "pitch"
+              and len(f.get("points", [])) >= 4]
+    return {"z": z, "buildings": buildings, "roads": roads, "trees": trees, "greens": greens,
+            "grid": (grid, origin, cell)}
 
 
 def _seg_dist(a, b) -> float:
@@ -285,7 +288,7 @@ DRIVING = ("tertiary", "secondary", "primary", "residential", "unclassified")
 
 def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0,
                 radius: float = RADIUS, seed: int = 3, max_parked: int = 110,
-                max_moving: int = 6) -> dict[str, list]:
+                max_moving: int = 6, greens: list | None = None) -> dict[str, list]:
     """Cars along the streets round the site: parked ones at the kerbs (with gaps, never on a
     building or by the site), and a few driving on the right. Returns {"parked": [(x, y, z,
     heading)], "moving": [[(x, y, z), ...] path, ...], "street_trees": [(x, y, z, height)]}, in
@@ -359,6 +362,25 @@ def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0
                         trees.append((x, y, zz, rng.uniform(5.0, 9.0)))
                     t += rng.uniform(12.0, 30.0)
     rng.shuffle(trees)
+    trees = trees[:80]
+
+    # parks and gardens (OSM): trees about every 9 m, jittered, as a real park is planted
+    park = []
+    for ring in greens or []:
+        pts = ring[:-1] if ring[0] == ring[-1] else ring
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        step = 9.0
+        gx = np.arange(min(xs), max(xs), step)
+        gy = np.arange(min(ys), max(ys), step)
+        if not len(gx) or not len(gy) or len(gx) * len(gy) > 4000:
+            continue
+        cand = np.array([(x + rng.uniform(-3, 3), y + rng.uniform(-3, 3)) for x in gx for y in gy])
+        for x, y in cand[inside(cand, pts)]:
+            if rng.random() < 0.7 and free(float(x), float(y)):
+                zz = float(sample(g, origin, cell, np.array([x]), np.array([y]))[0])
+                park.append((float(x), float(y), zz, rng.uniform(5.0, 10.0)))
+    rng.shuffle(park)
+    trees = trees + park[:120]
 
     moving = []
     lanes = sorted((r for r in roads if r.get("class") in DRIVING),
@@ -388,4 +410,4 @@ def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0
         if len(path) >= 2:
             moving.append(path)
     moving = [p for p in moving if sum(math.dist(a[:2], b[:2]) for a, b in zip(p[:-1], p[1:])) > 30]
-    return {"parked": parked, "moving": moving[:max_moving], "street_trees": trees[:80]}
+    return {"parked": parked, "moving": moving[:max_moving], "street_trees": trees}

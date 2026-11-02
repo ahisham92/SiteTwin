@@ -274,6 +274,21 @@ def get(name: str):
         _noise_mix(tree, bsdf, (0.72, 0.63, 0.47), (0.80, 0.72, 0.56), scale=0.3, rough=(0.85, 1.0), bump=0.2)
     elif name in ("asphalt", "asphalt_road"):
         _noise_mix(tree, bsdf, (0.07, 0.07, 0.075), (0.13, 0.13, 0.135), scale=2, detail=12, rough=(0.75, 0.95), bump=0.2)
+    elif name == "paving":
+        # pavement slabs, 0.6 x 0.4 m, light and worn, with dark joints
+        n, ln = tree.nodes, tree.links
+        tc = n.new("ShaderNodeTexCoord")
+        br = n.new("ShaderNodeTexBrick")
+        br.inputs["Scale"].default_value = 1.0
+        br.inputs["Brick Width"].default_value = 0.6
+        br.inputs["Row Height"].default_value = 0.4
+        br.inputs["Mortar Size"].default_value = 0.008
+        br.inputs["Color1"].default_value = (0.50, 0.48, 0.44, 1)
+        br.inputs["Color2"].default_value = (0.43, 0.41, 0.37, 1)
+        br.inputs["Mortar"].default_value = (0.22, 0.21, 0.19, 1)
+        ln.new(tc.outputs["Object"], br.inputs["Vector"])
+        ln.new(_macro(tree, tc, br.outputs["Color"], 0.8, 1.1, 10.0), bsdf.inputs["Base Color"])
+        bsdf.inputs["Roughness"].default_value = 0.85
     elif name == "rail":
         _noise_mix(tree, bsdf, (0.20, 0.17, 0.14), (0.28, 0.25, 0.22), scale=3, rough=(0.8, 1.0))
     elif name == "water":

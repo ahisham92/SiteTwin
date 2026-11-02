@@ -34,7 +34,8 @@ class Options:
     fps: int = 30
     when: dt.datetime | None = None       # local solar time of the shoot; default today 10:30
     site_margin: float = 12.0
-    camera_turn: float = 110.0            # degrees the camera travels round the site
+    camera_turn: float = 0.0              # degrees the camera travels round the site (0: held still,
+                                          # as a real time-lapse camera is, so nothing seems to turn)
 
 
 # ---- small helpers ----------------------------------------------------------------------
@@ -560,7 +561,8 @@ def rebuild_near(tiles: list, level: float, keep_out, feats: list, clear: float 
     bm.free()
     # the roads, laid on the smoothed ground (in scene heights; the tiles are lowered later)
     # (OSM roads are not drawn over Google's: laid as strips they floated and looked false)
-    life = NZ.street_life(out["roads"], out["buildings"], out["grid"], keep_out, clear)
+    life = NZ.street_life(out["roads"], out["buildings"], out["grid"], keep_out, clear,
+                          greens=out.get("greens"))
     return {"buildings": len(out["buildings"]), "roads": len(out["roads"]),
             "trees": [(t["x"], t["y"], t["z"], t["height"]) for t in out["trees"]
                       if math.hypot(max(keep_out[0] - t["x"], t["x"] - keep_out[2], 0.0),
@@ -632,13 +634,21 @@ def build_apron(site, pad_e: float) -> list:
     x0, y0, x1, y1 = site
     a = (x0 - pad_e, y0 - pad_e, x1 + pad_e, y1 + pad_e)
     b = (a[0] - APRON, a[1] - APRON, a[2] + APRON, a[3] + APRON)
-    z = 0.0
-    v = [(a[0], a[1], z), (a[2], a[1], z), (a[2], a[3], z), (a[0], a[3], z),
-         (b[0], b[1], z), (b[2], b[1], z), (b[2], b[3], z), (b[0], b[3], z)]
-    f = [(4, 5, 1, 0), (5, 6, 2, 1), (6, 7, 3, 2), (7, 4, 0, 3)]
-    apron = _mesh("apron", v, f, M.get("asphalt_road"))
+
+    def ring(name, inner, outer, z, mat):
+        v = [(inner[0], inner[1], z), (inner[2], inner[1], z), (inner[2], inner[3], z), (inner[0], inner[3], z),
+             (outer[0], outer[1], z), (outer[2], outer[1], z), (outer[2], outer[3], z), (outer[0], outer[3], z)]
+        f = [(4, 5, 1, 0), (5, 6, 2, 1), (6, 7, 3, 2), (7, 4, 0, 3)]
+        return _mesh(name, v, f, M.get(mat))
+
+    # a real street front: a 3 m pavement along the hoarding, a kerb, then the road
+    walk = 3.0
+    m = (a[0] - walk, a[1] - walk, a[2] + walk, a[3] + walk)
+    apron = ring("apron", m, b, 0.0, "asphalt_road")
+    pave = ring("apron_walk", a, m, 0.15, "paving")
     k, h = 0.3, 0.15
-    c = (b[0] + k, b[1] + k, b[2] - k, b[3] - k)
+    c = (m[0] + k, m[1] + k, m[2] - k, m[3] - k)
+    b = m
     kv = []
     for (X0, Y0, X1, Y1), zz in ((b, h), (c, h), (b, -0.2), (c, -0.2)):
         kv += [(X0, Y0, zz), (X1, Y0, zz), (X1, Y1, zz), (X0, Y1, zz)]
@@ -647,7 +657,7 @@ def build_apron(site, pad_e: float) -> list:
         j = (i + 1) % 4
         kf += [(i, j, 4 + j, 4 + i), (8 + i, 8 + j, j, i), (4 + i, 4 + j, 12 + j, 12 + i)]
     kerb = _mesh("apron_kerb", kv, kf, M.get("concrete"))
-    return [apron, kerb]
+    return [apron, pave, kerb]
 
 
 def build_base(g: Ground, z: float, horizon: float):
@@ -1388,20 +1398,33 @@ def build_camera(fp, top: float, tl: Timeline, opts: Options, gate_dir: tuple[fl
     rig.keyframe_insert("rotation_euler", frame=0)
     rig.rotation_euler = (0, 0, start + turn)
     rig.keyframe_insert("rotation_euler", frame=tl.frames)
-    # closer in for the build, out again for the finished building
-    cam.location = (radius * 1.15, 0, radius * 0.7)
-    cam.keyframe_insert("location", frame=tl.fly_end)
-    if tl.fly_end > 0:
-        _fly_down(cam, cam_data, (radius * 1.15, 0, radius * 0.7), tl.fly_end)
-    cam.location = (radius, 0, radius * 0.5)
-    cam.keyframe_insert("location", frame=tl.build_start + (tl.build_end - tl.build_start) // 3)
-    cam.location = (radius * 0.95, 0, radius * 0.42)
-    cam.keyframe_insert("location", frame=tl.build_end)
-    cam.location = (radius * 1.25, 0, radius * 0.38)
-    cam.keyframe_insert("location", frame=tl.frames)
-    target.keyframe_insert("location", frame=0)
-    target.location = (cx, cy, top * 0.5)
-    target.keyframe_insert("location", frame=tl.frames)
+    if opts.camera_turn <= 0:
+        # held still for the whole build, framing the finished building, like a time-lapse
+        # camera on a mast: the site never seems to move or turn
+        rest = (radius * 1.1, 0, radius * 0.55)
+        cam.location = rest
+        cam.keyframe_insert("location", frame=tl.fly_end)
+        if tl.fly_end > 0:
+            _fly_down(cam, cam_data, rest, tl.fly_end)
+        cam.keyframe_insert("location", frame=tl.frames)
+        target.location = (cx, cy, top * 0.4)
+        target.keyframe_insert("location", frame=0)
+        target.keyframe_insert("location", frame=tl.frames)
+    else:
+        # closer in for the build, out again for the finished building
+        cam.location = (radius * 1.15, 0, radius * 0.7)
+        cam.keyframe_insert("location", frame=tl.fly_end)
+        if tl.fly_end > 0:
+            _fly_down(cam, cam_data, (radius * 1.15, 0, radius * 0.7), tl.fly_end)
+        cam.location = (radius, 0, radius * 0.5)
+        cam.keyframe_insert("location", frame=tl.build_start + (tl.build_end - tl.build_start) // 3)
+        cam.location = (radius * 0.95, 0, radius * 0.42)
+        cam.keyframe_insert("location", frame=tl.build_end)
+        cam.location = (radius * 1.25, 0, radius * 0.38)
+        cam.keyframe_insert("location", frame=tl.frames)
+        target.keyframe_insert("location", frame=0)
+        target.location = (cx, cy, top * 0.5)
+        target.keyframe_insert("location", frame=tl.frames)
     for fc_obj in (rig,):
         ad = fc_obj.animation_data
         try:
@@ -1561,7 +1584,7 @@ def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[flo
     """The site as it is today, cleared piece by piece (nearest the gate first) while the
     excavator works, then the hoarding, cabins and laydown going up."""
     import bpy
-    ground = {"site_pad", "excavation", "site_walls", "apron", "apron_kerb"}
+    ground = {"site_pad", "excavation", "site_walls", "apron", "apron_kerb", "apron_walk"}
     for o in site_objs:
         base = o.name.split(".")[0]
         if existing and base in ground:
