@@ -52,6 +52,47 @@ def _noise_mix(tree, bsdf, c1, c2, scale=6.0, detail=8.0, rough=(0.6, 0.9), bump
         tree.links.new(b.outputs["Normal"], bsdf.inputs["Normal"])
 
 
+#: Ground seen from a drone is never one even colour: wide damp and dry patches, worn tracks,
+#: spilt sand. (low, high) brightness the photo texture is scaled between, over blotches this many
+#: metres across.
+MACRO = {"gravel": (0.62, 1.18, 18.0), "soil": (0.7, 1.15, 12.0), "asphalt": (0.75, 1.12, 22.0), "asphalt_road": (0.75, 1.12, 22.0),
+         "concrete": (0.85, 1.08, 15.0)}
+
+
+def _macro(tree, tc, colour, low: float, high: float, across: float):
+    """``colour`` scaled by large soft blotches (two noises, ``across`` metres and a third of it)."""
+    n, ln = tree.nodes, tree.links
+    big = n.new("ShaderNodeTexNoise")
+    big.inputs["Scale"].default_value = 1.0 / across
+    big.inputs["Detail"].default_value = 3.0
+    small = n.new("ShaderNodeTexNoise")
+    small.inputs["Scale"].default_value = 3.0 / across
+    small.inputs["Detail"].default_value = 6.0
+    for t in (big, small):
+        ln.new(tc.outputs["Object"], t.inputs["Vector"])
+    both = n.new("ShaderNodeMix")
+    both.data_type = "FLOAT"
+    both.inputs["Factor"].default_value = 0.35
+    ln.new(big.outputs["Fac"], both.inputs["A"])
+    ln.new(small.outputs["Fac"], both.inputs["B"])
+    ramp = n.new("ShaderNodeMapRange")
+    ramp.inputs["From Min"].default_value = 0.3
+    ramp.inputs["From Max"].default_value = 0.7
+    ramp.inputs["To Min"].default_value = low
+    ramp.inputs["To Max"].default_value = high
+    ln.new(both.outputs["Result"], ramp.inputs["Value"])
+    mul = n.new("ShaderNodeMix")
+    mul.data_type = "RGBA"
+    mul.blend_type = "MULTIPLY"
+    mul.inputs["Factor"].default_value = 1.0
+    ln.new(colour, mul.inputs["A"])
+    comb = n.new("ShaderNodeCombineColor")
+    for k in ("Red", "Green", "Blue"):
+        ln.new(ramp.outputs["Result"], comb.inputs[k])
+    ln.new(comb.outputs["Color"], mul.inputs["B"])
+    return mul.outputs["Result"]
+
+
 def _textured(name: str, maps: dict[str, str], size: float, tint: tuple | None = None):
     """A material from photo maps, projected on all six sides in world metres (no UVs needed)."""
     import bpy
@@ -82,6 +123,8 @@ def _textured(name: str, maps: dict[str, str], size: float, tint: tuple | None =
         tree.links.new(colour, mix.inputs["A"])
         mix.inputs["B"].default_value = (*tint, 1)
         colour = mix.outputs["Result"]
+    if name in MACRO:
+        colour = _macro(tree, tc, colour, *MACRO[name])
     tree.links.new(colour, bsdf.inputs["Base Color"])
     tree.links.new(image("rough", False).outputs["Color"], bsdf.inputs["Roughness"])
     nm = n.new("ShaderNodeNormalMap")
