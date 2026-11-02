@@ -25,7 +25,7 @@ from typing import Iterable
 Point = tuple[float, float]
 
 #: The shortest crane cycle the film shows, in seconds of film.
-CYCLE = 2.0
+CYCLE = 4.0     # seconds of film for one lift: slow enough that the crane never seems to spin
 #: Fractions of a cycle: go back to the laydown, lower to the load, sling it, hoist, slew, lower in, let go.
 PHASES = (("return", 0.18), ("down", 0.08), ("sling", 0.08), ("hoist", 0.14), ("slew", 0.28),
           ("lower", 0.16), ("release", 0.08))

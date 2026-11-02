@@ -21,13 +21,28 @@ for kind in files:
     E._library.clear()
     E.MODELS.clear()
     E.MODELS.update(files)
-    if kind.startswith("prop_"):
+    from sitetwin_worker.assets import CATALOG
+    if CATALOG.get(kind, {}).get("pack"):
+        # every model in the pack in a row, 6 m apart
+        objs = []
+        for i in range(12):
+            o = E.variant(kind, i)
+            if o is None or (objs and o.name.split("_")[-1] == objs[0].name.split("_")[-1] and i):
+                break
+            o.location = (0, i * 6.0, 0)
+            objs.append(o)
+        obj = bpy.data.objects.new(kind, None)
+        bpy.context.scene.collection.objects.link(obj)
+        for o in objs:
+            o.parent = obj
+        print(kind, "models in pack:", len(E._library.get(kind + ":pack", [])))
+    elif kind.startswith("prop_"):
         obj = E.prop(kind)
     elif kind.startswith("worker"):
         obj = E.worker(seed=1 if kind == "worker_b" else 0)
     else:
         obj = getattr(E, kind)()
-    parts = [c for c in obj.children if c.type == "MESH"]
+    parts = [c for c in obj.children_recursive if c.type == "MESH"]
     if not parts:
         print(kind, "fell back to the built-in shape")
         continue

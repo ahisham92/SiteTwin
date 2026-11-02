@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 
 from sitetwin_worker import nearzone as N
@@ -77,3 +79,36 @@ def test_osm_is_retried_on_a_busy_server():
     local = E.Local(33.89, 35.50) if hasattr(E, "Local") else None
     assert E.fetch_osm(local, 100, fetch, E.OVERPASS_MIRRORS[0], wait=lambda s: None) == []
     assert len(calls) == 3 and calls[2] != calls[0]
+
+
+def test_trees_found_pressed_and_kept_off_roofs():
+    rng = np.random.default_rng(0)
+    xy = rng.uniform(-60, 60, (6000, 2))
+    z = np.zeros(len(xy))
+    colour = np.full((len(xy), 3), 0.4)
+    blob = np.hypot(xy[:, 0] - 30, xy[:, 1] - 30) < 4.5
+    z[blob] = 7.0
+    colour[blob] = (0.12, 0.2, 0.1)
+    roof = (np.abs(xy[:, 0] + 30) < 5) & (np.abs(xy[:, 1] + 30) < 5)
+    z[roof] = 9.0
+    colour[roof] = (0.12, 0.2, 0.1)                      # a green roof is not a tree
+    xyz = np.column_stack([xy, z])
+    feats = [{"kind": "building", "points": [[-35, -35], [-25, -35], [-25, -25], [-35, -25], [-35, -35]]}]
+    out = N.plan(xyz, colour, np.zeros(len(xy), bool), feats, (-5, -5, 5, 5), radius=100)
+    assert out["trees"]
+    assert all(math.hypot(t["x"] - 30, t["y"] - 30) < 6 for t in out["trees"])
+    assert out["z"][blob].max() < 1.0
+    assert "_idx" not in out["trees"][0]
+
+
+def test_cars_park_at_kerbs_clear_of_site():
+    g = (np.zeros((60, 60)), -120.0, 4.0)
+    roads = [{"points": [[-100, 20], [100, 20]], "width": 8.0, "class": "residential"},
+             {"points": [[-100, -40], [100, -40]], "width": 10.0, "class": "secondary"}]
+    life = N.street_life(roads, [], g, (-10, -10, 10, 10), clear=15.0, radius=150)
+    assert len(life["parked"]) > 20
+    for x, y, z, h in life["parked"]:
+        assert min(abs(y - 20), abs(y + 40)) > 1.5      # at the kerb, not in the middle
+        assert math.hypot(max(-10 - x, x - 10, 0), max(-10 - y, y - 10, 0)) > 15
+    assert life["moving"]
+    assert life["street_trees"]

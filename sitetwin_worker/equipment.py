@@ -118,6 +118,168 @@ def _load(kind: str, path: Path, height: float, yaw: float, length: float | None
     return meshes
 
 
+def _split(meshes: list, cells: int = 300, trunks: bool = False) -> list[list]:
+    """Cut a pack (several models side by side, often in one mesh) into its separate models.
+    Every face is drawn on a plan grid ``cells`` across; touching patches of the grid are one
+    model (a car's wheels lie under its body, a tree's leaves over its trunk). A face spanning
+    much of the pack (a ground plane under them all) is dropped. With ``trunks`` (trees whose
+    crowns overlap), only the lowest fifth is drawn on the grid, one patch per trunk, and every
+    other face goes to the trunk nearest in plan."""
+    import bmesh
+    import numpy as np
+    per = []
+    for d in meshes:
+        n = len(d.vertices)
+        co = np.empty(n * 3)
+        d.vertices.foreach_get("co", co)
+        per.append(co.reshape(n, 3)[:, :2])
+    allxy = np.concatenate(per) if per else np.zeros((1, 2))
+    lo, hi = allxy.min(axis=0), allxy.max(axis=0)
+    ext = float(max(hi - lo)) or 1.0
+    cell = ext / cells
+    nx, ny = (int((hi - lo)[0] / cell) + 3, int((hi - lo)[1] / cell) + 3)
+    occ = np.zeros((nx, ny), bool)
+    faces = []                                        # (mesh index, face index, cell) per face
+    zs = [np.array([v.co.z for v in d.vertices]) for d in meshes]
+    zall = np.concatenate(zs) if zs else np.zeros(1)
+    low = float(zall.min() + 0.2 * (zall.max() - zall.min()))
+    upper = []                                        # faces left for the nearest trunk
+    for mi, (d, xy) in enumerate(zip(meshes, per)):
+        for poly in d.polygons:
+            vs = xy[list(poly.vertices)]
+            span = vs.max(axis=0) - vs.min(axis=0)
+            if max(span) > 0.4 * ext:
+                continue
+            if trunks and float(zs[mi][list(poly.vertices)].mean()) > low:
+                upper.append((mi, poly.index, vs.mean(axis=0)))
+                continue
+            ij = ((vs - lo) / cell).astype(int) + 1
+            i0, j0 = ij.min(axis=0)
+            i1, j1 = ij.max(axis=0)
+            occ[i0:i1 + 1, j0:j1 + 1] = True
+            c = ((vs.mean(axis=0) - lo) / cell).astype(int) + 1
+            faces.append((mi, poly.index, (int(c[0]), int(c[1]))))
+    label = np.full(occ.shape, -1, int)
+    n_lab = 0
+    for i, j in zip(*np.nonzero(occ)):
+        if label[i, j] >= 0:
+            continue
+        stack = [(i, j)]
+        label[i, j] = n_lab
+        while stack:
+            a, b = stack.pop()
+            for da in (-1, 0, 1):
+                for db in (-1, 0, 1):
+                    p, q = a + da, b + db
+                    if 0 <= p < nx and 0 <= q < ny and occ[p, q] and label[p, q] < 0:
+                        label[p, q] = n_lab
+                        stack.append((p, q))
+        n_lab += 1
+    keep: dict[int, dict[int, set]] = {}
+    for mi, fi, (i, j) in faces:
+        keep.setdefault(int(label[i, j]), {}).setdefault(mi, set()).add(fi)
+    if upper and n_lab:
+        centre = np.array([np.argwhere(label == k).mean(axis=0) for k in range(n_lab)]) * cell + lo - cell
+        for mi, fi, c in upper:
+            k = int(np.argmin(((centre - c) ** 2).sum(axis=1)))
+            keep.setdefault(k, {}).setdefault(mi, set()).add(fi)
+    sizes = {k: sum(len(v) for v in m.values()) for k, m in keep.items()}
+    big = max(sizes.values()) if sizes else 0
+    out = []
+    for k, by_mesh in keep.items():
+        if k < 0 or sizes[k] < 0.02 * big:                # crumbs, not a model
+            continue
+        group = []
+        for mi, fis in by_mesh.items():
+            bm = bmesh.new()
+            bm.from_mesh(meshes[mi])
+            bm.faces.ensure_lookup_table()
+            bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.index not in fis], context="FACES")
+            d = meshes[mi].copy()
+            bm.to_mesh(d)
+            bm.free()
+            group.append(d)
+        out.append(group)
+    return out
+
+
+def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float | None) -> list[list]:
+    """A pack of several models side by side in one file (cars, trees): each one stood up and
+    sized on its own, as ``_load`` does for a single model. Returns a list of mesh lists."""
+    import mathutils
+    meshes = _load(kind, path, 0.0, yaw, None)                # as modelled, rotated
+    if length:                                                # cars: the street's own muted paint
+        for d in meshes:
+            for mat in d.materials:
+                _mute(mat)
+    out = []
+    for group in _split(meshes, trunks=not length):
+        lo = [min(v.co[i] for d in group for v in d.vertices) for i in range(3)]
+        hi = [max(v.co[i] for d in group for v in d.vertices) for i in range(3)]
+        size = max(hi[0] - lo[0], hi[1] - lo[1])
+        if size < 1e-3 or (hi[2] - lo[2]) < 1e-3:
+            continue
+        k = (length / size) if length else (height / (hi[2] - lo[2]))
+        fit = mathutils.Matrix.Scale(k, 4) @ mathutils.Matrix.Translation(
+            (-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]))
+        if length and (hi[1] - lo[1]) > (hi[0] - lo[0]):     # a car lies along X, as the scene expects
+            fit = mathutils.Matrix.Rotation(-math.pi / 2, 4, "Z") @ fit
+        copies = []
+        for d in group:
+            c = d.copy()
+            c.transform(fit)
+            copies.append(c)
+        out.append(copies)
+    return out
+
+
+def _mute(mat, keep: float = 0.35) -> None:
+    """Take most of the colour out of a material's base colour (toy-bright paint to the greys,
+    whites and dull blues of real traffic)."""
+    if mat is None or not mat.use_nodes or mat.get("muted"):
+        return
+    mat["muted"] = True
+    nt = mat.node_tree
+    for node in [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"]:
+        base = node.inputs["Base Color"]
+        if base.links:
+            hsv = nt.nodes.new("ShaderNodeHueSaturation")
+            hsv.inputs["Saturation"].default_value = keep
+            nt.links.new(base.links[0].from_socket, hsv.inputs["Color"])
+            nt.links.new(hsv.outputs["Color"], base)
+        else:
+            r, g, b, a = base.default_value
+            m = (r + g + b) / 3
+            base.default_value = (m + (r - m) * keep, m + (g - m) * keep, m + (b - m) * keep, a)
+
+
+def variant(kind: str, n: int):
+    """The n-th model of a pack (wrapping round), as a new object; None when there is none."""
+    path = _model_file(kind)
+    if path is None:
+        return None
+    import bpy
+    key = kind + ":pack"
+    if key not in _library:
+        try:
+            from .assets import CATALOG
+            entry = CATALOG.get(kind, {})
+            _library[key] = _load_pack(kind, path, float(entry.get("height", 1.0)),
+                                       float(entry.get("yaw", 0.0)), entry.get("length"))
+        except Exception:                                     # noqa: BLE001 - nothing stands in
+            _library[key] = []
+    packs = _library[key]
+    if not packs:
+        return None
+    root = bpy.data.objects.new(f"{kind}_{n % len(packs)}", None)
+    bpy.context.scene.collection.objects.link(root)
+    for d in packs[n % len(packs)]:
+        o = bpy.data.objects.new(f"{kind}_part", d)
+        bpy.context.scene.collection.objects.link(o)
+        o.parent = root
+    return root
+
+
 def _asset(kind: str, height: float):
     """A copy of the real model of ``kind`` (sharing its meshes with the other copies), or None
     when there is none and the built-in shape is used."""
