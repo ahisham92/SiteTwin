@@ -87,9 +87,11 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     fps = 16
     frames = _frames(src, fps, width, height, seconds)
     n = len(frames)
-    # Each run makes 81 frames; its last few wash out, so only the first 73 are kept and the next
-    # run starts there (73 + 72 + 72 ...).
-    keep, stride = 73, 72
+    # Each run makes 81 frames; its last few wash out, so only the first 73 are kept. The next run
+    # starts 9 frames back and is handed those 9 finished frames as they are (masked out), so it
+    # carries straight on from them: no jump in the look where two runs meet.
+    keep, overlap = 73, 9
+    stride = keep - overlap
     runs = max(1, 1 + (n - 81) // stride) if n >= 81 else 1
     frames = frames[:stride * (runs - 1) + 81]
 
@@ -117,14 +119,27 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     pipe.to("cuda")
     models.commit()
 
+    def to_pil(a):
+        a = np.asarray(a)
+        if a.dtype != np.uint8:
+            a = (np.clip(a, 0, 1) * 255).astype(np.uint8)
+        return Image.fromarray(a)
+
+    white = Image.new("L", (width, height), 255)
+    black = Image.new("L", (width, height), 0)
     out_frames = []
     for r in range(runs):
-        part = depth[r * stride:r * stride + 81]
-        got = pipe(video=part, prompt=prompt, negative_prompt=NEGATIVE, height=height, width=width,
-                   num_frames=len(part), num_inference_steps=steps, guidance_scale=5.0,
+        part = list(depth[r * stride:r * stride + 81])
+        mask = [white] * len(part)
+        if r:
+            held = [to_pil(f) for f in out_frames[-overlap:]]
+            part[:overlap] = held
+            mask[:overlap] = [black] * overlap
+        got = pipe(video=part, mask=mask, prompt=prompt, negative_prompt=NEGATIVE, height=height,
+                   width=width, num_frames=len(part), num_inference_steps=steps, guidance_scale=5.0,
                    conditioning_scale=scale, generator=torch.Generator().manual_seed(seed)).frames[0]
         got = list(got)[:keep]
-        out_frames.extend(got if r == 0 else got[1:])
+        out_frames.extend(got if r == 0 else got[overlap:])
     real = work / "real.mp4"
     export_to_video(out_frames, str(real), fps=fps)
     # the same shot side by side: our render on the left, the AI's on the right

@@ -354,7 +354,7 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
     if manifest.get("osm"):
         try:
             feats = json.loads((folder / manifest["osm"]["file"]).read_text())
-            rebuild_near(near, level, keep_out, feats)
+            manifest["_street"] = rebuild_near(near, level, keep_out, feats, clear=flat + 12.0)
         except Exception as exc:                            # noqa: BLE001 - Google's own look stands
             print(f"  near streets not rebuilt: {type(exc).__name__}: {exc}")
 
@@ -490,7 +490,7 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
     return level, (lowest if lowest < math.inf else 0.0)
 
 
-def rebuild_near(tiles: list, level: float, keep_out, feats: list) -> dict:
+def rebuild_near(tiles: list, level: float, keep_out, feats: list, clear: float = 0.0) -> dict:
     """The streets round the site rebuilt clean (see nearzone.py): Google's surface is reshaped
     in place, and the buildings and roads are added. Works in the tiles' own (raw) heights."""
     import bmesh
@@ -560,7 +560,12 @@ def rebuild_near(tiles: list, level: float, keep_out, feats: list) -> dict:
     bm.free()
     # the roads, laid on the smoothed ground (in scene heights; the tiles are lowered later)
     # (OSM roads are not drawn over Google's: laid as strips they floated and looked false)
-    return {"buildings": len(out["buildings"]), "roads": len(out["roads"])}
+    life = NZ.street_life(out["roads"], out["buildings"], out["grid"], keep_out, clear)
+    return {"buildings": len(out["buildings"]), "roads": len(out["roads"]),
+            "trees": [(t["x"], t["y"], t["z"], t["height"]) for t in out["trees"]
+                      if math.hypot(max(keep_out[0] - t["x"], t["x"] - keep_out[2], 0.0),
+                                    max(keep_out[1] - t["y"], t["y"] - keep_out[3], 0.0)) > clear],
+            **life}
 
 
 def _vertex_photo_colours(o, n: int) -> np.ndarray:
@@ -1376,7 +1381,9 @@ def build_camera(fp, top: float, tl: Timeline, opts: Options, gate_dir: tuple[fl
     bpy.context.scene.camera = cam
     # start looking in through the gate side, quarter on, and travel round
     start = math.atan2(gate_dir[1], gate_dir[0]) - math.radians(35)
-    turn = math.radians(opts.camera_turn)
+    # a real drone orbits slowly: never more than about 4 degrees a second (a short film turns
+    # less), so the site and the crane do not seem to spin
+    turn = math.radians(min(opts.camera_turn, 4.0 * tl.frames / tl.fps))
     rig.rotation_euler = (0, 0, start)
     rig.keyframe_insert("rotation_euler", frame=0)
     rig.rotation_euler = (0, 0, start + turn)
@@ -1530,6 +1537,9 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     build_crews(tl, fp, pts, pit_depth, rng, plan)
     before = set(bpy.data.objects)
     build_props(g, fp, pts, plan, rng)
+    street = manifest.pop("_street", None)
+    if street:
+        print("  street life:", build_street(street, tl, rng))
     site_objs += [o for o in bpy.data.objects if o not in before and o.parent is None]
     site_objs += plan.get("fixed_people", [])
     clashes = check_clearance(plan.get("people", []), plan.get("machines", []), tl.frames)
@@ -1671,6 +1681,81 @@ def build_props(g: Ground, fp, pts: dict[str, Any], plan: dict[str, Any], rng: r
         obj.rotation_euler = (0, 0, h + rng.uniform(-0.06, 0.06))
         n += 1
     return n
+
+
+CAR_SPEED = 9.0         # m/s of film time: town traffic
+
+
+def build_street(street: dict[str, Any], tl: Timeline, rng: random.Random) -> dict[str, int]:
+    """Real trees where Google had tree blobs, cars parked at the kerbs and a few driving."""
+    n = {"trees": 0, "parked": 0, "moving": 0}
+    for i, (x, y, z, h) in enumerate(street.get("trees", [])):
+        palm = rng.random() < 0.35
+        o = E.prop("prop_palm") if palm else E.variant("prop_tree", rng.randrange(1000))
+        if o is None:
+            continue
+        base = 9.0 if palm else 8.0
+        k = max(0.5, min(1.8, h / base)) * rng.uniform(0.9, 1.1)
+        o.scale = (k, k, k)
+        o.location = (x, y, z - 0.05)
+        o.rotation_euler = (0, 0, rng.uniform(0, 2 * math.pi))
+        n["trees"] += 1
+    for i, (x, y, z, head) in enumerate(street.get("parked", [])):
+        o = E.variant("prop_cars", i)
+        if o is None:
+            break
+        o.location = (x, y, z + 0.02)
+        o.rotation_euler = (0, 0, head + rng.uniform(-0.03, 0.03))
+        n["parked"] += 1
+    for j, path in enumerate(street.get("moving", [])):
+        o = E.variant("prop_cars", 50 + j * 3)
+        if o is None:
+            break
+        _drive(o, path, tl, rng)
+        n["moving"] += 1
+    return n
+
+
+def _drive(o, path: list, tl: Timeline, rng: random.Random) -> None:
+    """A car along a path at a steady speed, from a random start; at the end it is hidden and
+    starts again from the beginning (as if the next car came round the corner)."""
+    seg = [math.dist(a[:2], b[:2]) for a, b in zip(path[:-1], path[1:])]
+    total = sum(seg)
+    step = CAR_SPEED / tl.fps
+    pos = rng.uniform(0, total)
+    shown = None
+    prev = None
+    for f in range(0, tl.frames + 1, 2):
+        d = pos % total
+        k = 0
+        while k < len(seg) - 1 and d > seg[k]:
+            d -= seg[k]
+            k += 1
+        a, b = path[k], path[k + 1]
+        t = d / seg[k] if seg[k] else 0.0
+        o.location = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t + 0.02)
+        ang = math.atan2(b[1] - a[1], b[0] - a[0])
+        if prev is not None:
+            ang = prev + (ang - prev + math.pi) % (2 * math.pi) - math.pi
+        prev = ang
+        o.rotation_euler = (0, 0, ang)
+        o.keyframe_insert("location", frame=f)
+        o.keyframe_insert("rotation_euler", frame=f)
+        near_end = (pos % total) > total - 2 * step * 2 or (pos % total) < 2 * step * 2
+        if near_end != shown:
+            o.hide_render = near_end
+            o.keyframe_insert("hide_render", frame=f)
+            shown = near_end
+        pos += step * 2
+    ad = o.animation_data
+    try:
+        curves = ad.action.fcurves
+    except AttributeError:
+        curves = [fc for layer in ad.action.layers for strip in layer.strips
+                  for bag in strip.channelbags for fc in bag.fcurves]
+    for fc in curves:
+        for kp in fc.keyframe_points:
+            kp.interpolation = "LINEAR" if fc.data_path != "hide_render" else "CONSTANT"
 
 
 def _floor_of(st, elements: list[Element]) -> float:

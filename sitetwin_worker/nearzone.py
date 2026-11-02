@@ -112,7 +112,7 @@ def plan(xyz: np.ndarray, colour: np.ndarray, steep: np.ndarray, feats: list[dic
     """From the photo mesh's points (lowered to the site's level), their sampled photo colours
     (n x 3, linear) and whether each sits on a steep (wall) face: the buildings to put up, and the
     new height of every point. Returns {"z": new z per point, "buildings": [...], "roads": [...],
-    "grid": (grid, origin, cell)}."""
+    "trees": [...], "grid": (grid, origin, cell)}."""
     kx0, ky0, kx1, ky1 = keep_out
     z = xyz[:, 2].copy()
     xy = xyz[:, :2]
@@ -159,8 +159,12 @@ def plan(xyz: np.ndarray, colour: np.ndarray, steep: np.ndarray, feats: list[dic
                           "base": base, "top": top, "wall": wall, "roof": roof,
                           "floors": max(1, int(round(height / 3.2)))})
 
-    # low clutter on the ground pressed flat (fading out at the edge of the rebuilt zone)
+    # Google's trees are green blobs: each is found, pressed flat, and a real tree stands there
     w = np.clip((radius - r) / FADE, 0.0, 1.0)
+    trees, pressed = find_trees(xy, z, ground, colour, buildings, keep_out, radius - FADE)
+    z[pressed] = ground[pressed]
+
+    # low clutter on the ground pressed flat (fading out at the edge of the rebuilt zone)
     over = z - ground
     clutter = (over > 0.0) & (over < CLUTTER) & (w > 0)
     z[clutter] = z[clutter] - over[clutter] * w[clutter]
@@ -174,7 +178,7 @@ def plan(xyz: np.ndarray, colour: np.ndarray, steep: np.ndarray, feats: list[dic
         if not any(_seg_dist(a, b) < radius for a, b in zip(pts[:-1], pts[1:])):
             continue
         roads.append({"points": pts, "width": float(f.get("width", 6.0)), "class": f.get("class")})
-    return {"z": z, "buildings": buildings, "roads": roads, "grid": (grid, origin, cell)}
+    return {"z": z, "buildings": buildings, "roads": roads, "trees": trees, "grid": (grid, origin, cell)}
 
 
 def _seg_dist(a, b) -> float:
@@ -231,3 +235,124 @@ def road_quads(road: dict[str, Any], grid, radius: float, keep_out, lift: float 
                 vs.extend((float(x), float(y), float(zz)) for x, y, zz in zip(xs, ys, zs))
                 fs.append((k, k + 1, k + 2, k + 3))
     return verts, faces, lv, lf
+
+
+TREE_CELL = 5.0         # one tree per this many metres of green canopy
+MAX_TREES = 160
+
+
+def find_trees(xy: np.ndarray, z: np.ndarray, ground: np.ndarray, colour: np.ndarray,
+               buildings: list, keep_out, radius: float) -> tuple[list[dict[str, Any]], np.ndarray]:
+    """Green points standing 2 to 20 m over the ground, off the buildings: Google's trees.
+    Returns one tree per 5 m cell of them (as tall as the canopy), and the indices of all those
+    points, to press flat."""
+    kx0, ky0, kx1, ky1 = keep_out
+    over = z - ground
+    c = colour
+    green = (c[:, 1] > c[:, 0] * 1.04) & (c[:, 1] > c[:, 2] * 1.08) & (c[:, 1] < 0.6)
+    cand = green & (over > 2.0) & (over < 20.0) & (np.hypot(xy[:, 0], xy[:, 1]) < radius)
+    cand &= ~((xy[:, 0] > kx0 - 4) & (xy[:, 0] < kx1 + 4) & (xy[:, 1] > ky0 - 4) & (xy[:, 1] < ky1 + 4))
+    idx = np.flatnonzero(cand)
+    for b in buildings:                                   # never a tree on a roof
+        if not len(idx):
+            break
+        idx = idx[~inside(xy[idx], b["points"], 1.0)]
+    cells: dict[tuple[int, int], list[int]] = {}
+    for i, (px, py) in zip(idx, (xy[idx] // TREE_CELL).astype(int)):
+        cells.setdefault((int(px), int(py)), []).append(int(i))
+    out = []
+    for pts in cells.values():
+        if len(pts) < 3:
+            continue
+        p = np.array(pts)
+        out.append({"x": float(xy[p, 0].mean()), "y": float(xy[p, 1].mean()),
+                    "z": float(np.median(ground[p])),
+                    "height": float(np.clip(np.percentile(over[p], 90), 4.0, 15.0)), "_n": len(pts)})
+    out.sort(key=lambda t: -t.pop("_n"))
+    return out[:MAX_TREES], idx
+
+
+PARKING = ("residential", "tertiary", "secondary", "primary", "unclassified", "living_street")
+DRIVING = ("tertiary", "secondary", "primary", "residential", "unclassified")
+
+
+def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0,
+                radius: float = RADIUS, seed: int = 3, max_parked: int = 110,
+                max_moving: int = 6) -> dict[str, list]:
+    """Cars along the streets round the site: parked ones at the kerbs (with gaps, never on a
+    building or by the site), and a few driving on the right. Returns {"parked": [(x, y, z,
+    heading)], "moving": [[(x, y, z), ...] path, ...]}, in the ground grid's heights.
+    ``clear``: metres round the site (its graded ring) kept free."""
+    import random
+    rng = random.Random(seed)
+    g, origin, cell = grid
+    kx0, ky0, kx1, ky1 = keep_out
+
+    def from_site(x, y):
+        return math.hypot(max(kx0 - x, x - kx1, 0.0), max(ky0 - y, y - ky1, 0.0))
+
+    def free(x, y):
+        if math.hypot(x, y) > radius - 12 or from_site(x, y) < clear + 3:
+            return False
+        p = np.array([[x, y]])
+        return not any(inside(p, b["points"], 0.6)[0] for b in buildings
+                       if abs(b["points"][0][0] - x) < 120 and abs(b["points"][0][1] - y) < 120)
+
+    ends = [tuple(r["points"][i]) for r in roads for i in (0, -1)]
+    parked = []
+    for r in roads:
+        if r.get("class") not in PARKING or r["width"] < 4.5:
+            continue
+        w = r["width"] / 2
+        pts = r["points"]
+        for a, b in zip(pts[:-1], pts[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(dx, dy)
+            if L < 8:
+                continue
+            ux, uy = dx / L, dy / L
+            nx, ny = -uy, ux
+            for side in (1, -1):
+                t = rng.uniform(2.0, 6.0)
+                while t < L - 3.0:
+                    if rng.random() < 0.6:
+                        x = a[0] + ux * t + nx * side * (w - 1.1)
+                        y = a[1] + uy * t + ny * side * (w - 1.1)
+                        corner = any(math.hypot(x - ex, y - ey) < 9 for ex, ey in ends)
+                        if not corner and free(x, y):
+                            zz = float(sample(g, origin, cell, np.array([x]), np.array([y]))[0])
+                            head = math.atan2(uy, ux) + (math.pi if rng.random() < 0.15 else 0.0)
+                            parked.append((x, y, zz, head))
+                    t += rng.uniform(5.4, 6.6)
+    rng.shuffle(parked)
+    parked = parked[:max_parked]
+
+    moving = []
+    lanes = sorted((r for r in roads if r.get("class") in DRIVING),
+                   key=lambda r: -sum(math.dist(a, b) for a, b in zip(r["points"][:-1], r["points"][1:])))
+    for r in lanes[:max_moving]:
+        pts = r["points"] if rng.random() < 0.5 else r["points"][::-1]
+        off = r["width"] / 4
+        path = []
+        for a, b in zip(pts[:-1], pts[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(dx, dy)
+            if L < 0.5:
+                continue
+            ux, uy = dx / L, dy / L
+            steps = max(1, int(L / 3.0))
+            for s in range(steps + 1):
+                x = a[0] + dx * s / steps + uy * off              # keep right
+                y = a[1] + dy * s / steps - ux * off
+                if math.hypot(x, y) > radius - 5 or from_site(x, y) < clear + 2:
+                    if len(path) >= 2:
+                        moving.append(path)
+                    path = []
+                    continue
+                zz = float(sample(g, origin, cell, np.array([x]), np.array([y]))[0])
+                if not path or math.dist(path[-1][:2], (x, y)) > 0.5:
+                    path.append((x, y, zz))
+        if len(path) >= 2:
+            moving.append(path)
+    moving = [p for p in moving if sum(math.dist(a[:2], b[:2]) for a, b in zip(p[:-1], p[1:])) > 30]
+    return {"parked": parked, "moving": moving[:max_moving]}

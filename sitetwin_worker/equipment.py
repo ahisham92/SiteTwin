@@ -159,6 +159,8 @@ def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float |
         k = (length / size) if length else (height / (hi[2] - lo[2]))
         fit = mathutils.Matrix.Scale(k, 4) @ mathutils.Matrix.Translation(
             (-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]))
+        if length and (hi[1] - lo[1]) > (hi[0] - lo[0]):     # a car lies along X, as the scene expects
+            fit = mathutils.Matrix.Rotation(-math.pi / 2, 4, "Z") @ fit
         copies = []
         for d in group:
             c = d.copy()
