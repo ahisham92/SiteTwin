@@ -371,6 +371,7 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
     inner = float(info.get("radius", g.radius))
     outer = float(info.get("horizon", inner))
     lowest = math.inf
+    graded_objs = manifest.setdefault("_graded", [])
     def inside(f) -> bool:
         c = f.calc_center_median()
         return (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1) or any(
@@ -380,16 +381,26 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                         (far, lambda c: inner < math.hypot(c.x, c.y) <= outer)):
         for o in group:
             if group is near and existing is not None:
-                # what stands on the site today: kept apart, to be cleared at the start of the film
+                # what stands on the site today: kept apart in small pieces (about 6 m square),
+                # to be broken out one by one at the start of the film
                 bm = bmesh.new()
                 bm.from_mesh(o.data)
-                gone = [f for f in bm.faces if not inside(f)]
-                if len(gone) < len(bm.faces):
-                    bmesh.ops.delete(bm, geom=gone, context="FACES")
-                    for v in bm.verts:            # its ground sits a hair over the new pad, never under
+                cells: dict[tuple[int, int], list] = {}
+                for f in bm.faces:
+                    if inside(f):
+                        c = f.calc_center_median()
+                        cells.setdefault((int(c.x // 6), int(c.y // 6)), []).append(f.index)
+                for cell, idx in cells.items():
+                    piece = bm.copy()
+                    piece.faces.index_update()
+                    keep_idx = set(idx)
+                    bmesh.ops.delete(piece, geom=[f for f in piece.faces if f.index not in keep_idx],
+                                     context="FACES")
+                    for v in piece.verts:          # its ground sits a hair over the new pad, never under
                         v.co.z = max(v.co.z - level - 0.05, 0.1)
                     data = bpy.data.meshes.new("existing")
-                    bm.to_mesh(data)
+                    piece.to_mesh(data)
+                    piece.free()
                     for mat in o.data.materials:
                         data.materials.append(mat)
                     ob = bpy.data.objects.new("existing_site", data)
@@ -401,12 +412,26 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
             bm.from_mesh(o.data)
             gone = [f for f in bm.faces if not keep(f.calc_center_median()) or inside(f)]
             bmesh.ops.delete(bm, geom=gone, context="FACES")
+            staged = group is near and existing is not None
+            target = []
             for v in bm.verts:
                 x, y, z = v.co
-                v.co.z = graded(x, y, z - level - 0.05)
-                lowest = min(lowest, v.co.z)
+                z = z - level - 0.05
+                gz = graded(x, y, z)
+                if staged:                          # the ground as it is; graded during the clearing
+                    v.co.z = z
+                    target.append(gz)
+                else:
+                    v.co.z = gz
+                lowest = min(lowest, gz)
             bm.to_mesh(o.data)
             bm.free()
+            if staged and any(abs(t - v.co.z) > 1e-3 for t, v in zip(target, o.data.vertices)):
+                o.shape_key_add(name="as_is")
+                key = o.shape_key_add(name="graded", from_mix=False)
+                for t, kv in zip(target, key.data):
+                    kv.co.z = t
+                graded_objs.append(o)
             o.name = "google_" + o.name
             _photo_material(o)
     # the opening flight's Earth, region and city: each kept only beyond the finer one inside it
@@ -1095,6 +1120,7 @@ def _fly_down(cam, cam_data, end: tuple[float, float, float], frames: int,
     ex, _, ez = end
     end_dist = math.hypot(ex, ez)
     end_el = math.atan2(ez, ex)
+    low = 0
     for f in list(range(0, frames, 2)) + [frames]:
         u = f / frames
         k = u * u * (3 - 2 * u)                              # ease in and out
@@ -1106,10 +1132,16 @@ def _fly_down(cam, cam_data, end: tuple[float, float, float], frames: int,
         cam_data.clip_end = max(20000.0, dist * 3.0)
         cam_data.keyframe_insert("clip_start", frame=f)
         cam_data.keyframe_insert("clip_end", frame=f)
+        if dist > 3000.0:
+            low = f + 2
     for fc in _curves(cam) + _curves(cam_data):
         for kp in fc.keyframe_points:
             if kp.co[0] <= frames:
                 kp.interpolation = "LINEAR"
+    import bpy
+    for o in bpy.data.objects:                           # the flat skirt would show over the curved Earth
+        if o.name.startswith("skirt"):
+            _visible(o, min(low, frames), None, bpy.context.scene.frame_end + 1)
 
 
 def configure_render(opts: Options, frames: int, out_dir: Path) -> None:
@@ -1202,8 +1234,9 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     site_objs += [o for o in bpy.data.objects if o not in before and o.parent is None]
     site_objs += plan.get("fixed_people", [])
     clashes = check_clearance(plan.get("people", []), plan.get("machines", []), tl.frames)
+    graded = manifest.pop("_graded", [])
     if tl.clear_end > 0:
-        stage_opening(tl, site_objs, existing, pts["gate"])
+        stage_opening(tl, site_objs, existing, pts["gate"], graded)
     elev, az = build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)
     build_camera(fp, top, tl, opts, pts["out"])
     if tl.fly_end > 0:
@@ -1214,7 +1247,8 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
             "top": top, "footprint": fp}
 
 
-def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[float, float]) -> None:
+def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[float, float],
+                  graded: list | None = None) -> None:
     """The site as it is today, cleared piece by piece (nearest the gate first) while the
     excavator works, then the hoarding, cabins and laydown going up."""
     import bpy
@@ -1228,6 +1262,12 @@ def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[flo
     if not existing:
         return
     span = max(2, tl.clear_end - tl.clear_start)
+    for o in graded or []:                              # the ground round the site levelled as it is cleared
+        kb = o.data.shape_keys.key_blocks["graded"]
+        kb.value = 0.0
+        kb.keyframe_insert("value", frame=tl.clear_start)
+        kb.value = 1.0
+        kb.keyframe_insert("value", frame=tl.clear_start + span // 2)
 
     def centre(o):
         xs = [v.co.x for v in o.data.vertices] or [0.0]
