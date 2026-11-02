@@ -461,18 +461,20 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
         return out
 
     finer = near + far
-    for name, cell in (("city", 60.0), ("region", 600.0), ("globe", 6000.0)):
+    for name, cell, drop in (("city", 60.0, 1.5), ("region", 600.0, 8.0), ("globe", 6000.0, 60.0)):
         objs = load(info.get("intro", {}).get(name, []))
         have = covered(finer, cell)
         kept = []
         for o in objs:
             bm = bmesh.new()
             bm.from_mesh(o.data)
-            gone = [f for f in bm.faces
-                    if (int(f.calc_center_median().x // cell), int(f.calc_center_median().y // cell)) in have
-                    or math.hypot(*f.calc_center_median()[:2]) < inner]
+            def hidden(f) -> bool:                      # wholly under the finer layer
+                pts = [f.calc_center_median()] + [v.co for v in f.verts]
+                return all((int(p.x // cell), int(p.y // cell)) in have for p in pts)
+            gone = [f for f in bm.faces if hidden(f) or math.hypot(*f.calc_center_median()[:2]) < inner]
             bmesh.ops.delete(bm, geom=gone, context="FACES")
-            bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, -level - 0.05))
+            # a little below the finer layer, so where both remain the finer one shows
+            bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, -level - 0.05 - drop))
             bm.to_mesh(o.data)
             bm.free()
             o.name = f"google_{name}"
@@ -1308,8 +1310,8 @@ def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[flo
     order = sorted(existing, key=lambda o: math.dist(centre(o), gate))
     n = len(order)
     for i, o in enumerate(order):
-        s0 = tl.clear_start + int(span * 0.75 * i / max(1, n))
-        s1 = s0 + max(2, int(span * 0.25))
+        s0 = tl.clear_start + int(span * 0.9 * i / max(1, n))
+        s1 = s0 + max(2, int(span * 0.06))
         o.scale = (1, 1, 1)
         o.keyframe_insert("scale", frame=s0)
         o.scale = (1, 1, 0.02)                              # broken down to the ground and carted off
