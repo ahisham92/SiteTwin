@@ -82,8 +82,11 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     fps = 16
     frames = _frames(src, fps, width, height, seconds)
     n = len(frames)
-    runs = max(1, (n - 1) // 80)
-    frames = frames[:runs * 80 + 1]
+    # Each run makes 81 frames; its last few wash out, so only the first 73 are kept and the next
+    # run starts there (73 + 72 + 72 ...).
+    keep, stride = 73, 72
+    runs = max(1, 1 + (n - 81) // stride) if n >= 81 else 1
+    frames = frames[:stride * (runs - 1) + 81]
 
     depth_model = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf",
                            device="cuda")
@@ -107,10 +110,11 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
     out_frames = []
     for r in range(runs):
-        part = depth[r * 80:r * 80 + 81]
+        part = depth[r * stride:r * stride + 81]
         got = pipe(video=part, prompt=prompt, negative_prompt=NEGATIVE, height=height, width=width,
                    num_frames=len(part), num_inference_steps=steps, guidance_scale=5.0,
                    conditioning_scale=scale, generator=torch.Generator().manual_seed(seed)).frames[0]
+        got = list(got)[:keep]
         out_frames.extend(got if r == 0 else got[1:])
     real = work / "real.mp4"
     export_to_video(out_frames, str(real), fps=fps)
