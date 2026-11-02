@@ -114,7 +114,7 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
         seconds: float = 90, quality: str = "draft", title: str | None = None,
         when: dt.datetime | None = None, frames: list[int] | None = None, log=print,
         chunk: tuple[int, int] | None = None, prepare_only: bool = False,
-        on_stage=None, on_frame=None) -> dict[str, Any]:
+        on_stage=None, on_frame=None, fly_in: bool = True) -> dict[str, Any]:
     """Render the film. ``chunk=(first, last)`` renders only those frames and encodes them as
     one segment (for splitting a film across several GPUs); ``prepare_only`` fetches the
     surroundings and plans the timeline, and stops there."""
@@ -141,7 +141,7 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
 
     stage("surroundings")
     log(f"Fetching the surroundings of {lat:.5f}, {lon:.5f} (radius {radius:.0f} m)…")
-    manifest = environment.gather(lat, lon, radius, out / "environment")
+    manifest = environment.gather(lat, lon, radius, out / "environment", intro=fly_in)
     for k, why in manifest.get("missing", {}).items():
         log(f"  no {k}: {why}")
     if manifest.get("google"):                     # Google's mesh replaces the terrain, imagery and OSM
@@ -162,7 +162,7 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
         log(f"  real models: {', '.join(models)}")
 
     stage("scene")
-    tl = sequence.plan(elements, seconds=seconds, fps=q["fps"])
+    tl = sequence.plan(elements, seconds=seconds, fps=q["fps"], fly_in=fly_in)
     (out / "timeline.json").write_text(json.dumps(tl.as_dict(), indent=1))
     log(f"  {len(tl.steps)} steps, {tl.frames} frames")
     if prepare_only:

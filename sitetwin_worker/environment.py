@@ -240,7 +240,7 @@ def fetch_osm(local: Local, radius: float, fetch: Fetch, url: str) -> list[dict[
 # ---- all of it --------------------------------------------------------------------------
 
 def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources | None = None,
-           fetch: Fetch = http_get, refresh: bool = False) -> dict[str, Any]:
+           fetch: Fetch = http_get, refresh: bool = False, intro: bool = True) -> dict[str, Any]:
     """Fetch (or reuse) everything around (lat, lon) into ``folder``; returns the manifest."""
     sources = sources or Sources()
     folder = Path(folder)
@@ -273,7 +273,7 @@ def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources
 
     try:
         from . import google3d
-        manifest["google"] = google3d.gather(lat, lon, radius, folder / "google", fetch)
+        manifest["google"] = google3d.gather(lat, lon, radius, folder / "google", fetch, intro=intro)
         manifest["credits"].insert(0, "3D surroundings: " + manifest["google"]["credit"])
     except LookupError as exc:                         # no key, or Google has no 3D here
         manifest["google_skipped"] = str(exc)
