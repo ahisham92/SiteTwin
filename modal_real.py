@@ -46,8 +46,7 @@ PROMPT = ("Real aerial drone footage, slowly orbiting a construction site in the
 NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic, toy, low poly, "
             "blurry, smeared, distorted, warped buildings, flicker, text, watermark, subtitles, "
             "overexposed, oversaturated, worst quality, low quality, JPEG artifacts, mosaic, "
-            "tiles pattern, cracked texture, black ground, abstract pattern, green tarp, green netting "
-            "covering the ground, plastic sheeting, neon colours, saturated green")
+            "tiles pattern, cracked texture, black ground, abstract pattern, neon colours")
 
 
 def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
@@ -66,7 +65,7 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
 @app.function(image=image, gpu=GPU, volumes={"/models": models}, timeout=3 * 3600)
 def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int = 30,
             width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7,
-            control: str = "depth", near: float = 0.45) -> dict:
+            control: str = "depth", near: float = 0.6) -> dict:
     """``control``: "depth" guides by depth alone; "mix" guides the near part (the nearest
     ``near`` share of each frame) by depth and the rest by our render in grey, so the AI keeps
     the real streets and blocks round the site (it colours them) instead of inventing new ones."""
