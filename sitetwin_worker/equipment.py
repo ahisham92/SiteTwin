@@ -350,8 +350,16 @@ def slings():
 
 
 def worker(vest: str = "hivis", seed: int = 0):
-    a = _asset("worker", 1.75)
+    a = _asset("worker_b" if seed % 2 and _model_file("worker_b") else "worker", 1.75)
     if a is not None:
+        # a scanned person, dressed for site: hi-vis vest over the torso and a hard hat
+        h = max((v.co.z for c in a.children if c.type == "MESH" for v in c.data.vertices), default=1.75)
+        gear = _build("worker_gear", [
+            ("cyl", vest, (0, 0, h * 0.66), (0.40, 0.50, h * 0.21), 0),
+            ("ball", "helmet", (0, 0, h * 0.975), (0.27, 0.25, 0.17), 0),
+            ("cyl", "helmet", (0.03, 0, h * 0.955), (0.32, 0.29, 0.02), 0),     # brim
+        ])
+        gear.parent = a
         return a
     lean = ((seed * 37) % 11 - 5) * 0.02
     p: list = [
@@ -366,6 +374,11 @@ def worker(vest: str = "hivis", seed: int = 0):
         ("cyl", "helmet", (0, 0, 1.72), (0.28, 0.26, 0.12), 0),
     ]
     return _build("worker", p)
+
+
+def prop(kind: str):
+    """A real model of a site prop (pallet, skip, barrier...), or None when there is none."""
+    return _asset(kind, 1.0)
 
 
 def site_cabin():

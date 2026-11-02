@@ -128,3 +128,22 @@ def test_a_real_model_is_stood_on_the_ground_scaled_and_shared_between_copies(tm
     finally:
         E.MODELS.clear()
         E._library.clear()
+
+
+def test_props_stay_inside_the_hoarding_off_the_building_and_out_of_the_lane():
+    from sitetwin_worker import logistics as L
+    from sitetwin_worker import scene
+    site = (-40, -35, 40, 35)
+    fp = (-20, -15, 20, 15)
+    pts = {"gate": (0.0, -35.0), "out": (0.0, -1.0), "along": (1.0, 0.0), "laydown": (-14.0, -30.0)}
+    lane = L.Lane(far=(0.0, -90.0), bay=(0.0, -29.0))
+    spots = scene.prop_spots(site, fp, pts, lane)
+    kinds = {k for k, *_ in spots}
+    assert {"prop_barrier", "prop_toilet", "prop_skip", "prop_bricks", "prop_light"} <= kinds
+    for kind, x, y, _ in spots:
+        assert not (fp[0] - 2 < x < fp[2] + 2 and fp[1] - 2 < y < fp[3] + 2)
+        if kind == "prop_barrier":
+            assert y < site[1] and abs(x) > 5                 # lining the road, clear of the trucks
+        else:
+            assert site[0] < x < site[2] and site[1] < y < site[3]
+            assert lane.keeps_clear((x, y), margin=1.0)

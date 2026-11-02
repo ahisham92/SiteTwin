@@ -21,13 +21,19 @@ for kind in files:
     E._library.clear()
     E.MODELS.clear()
     E.MODELS.update(files)
-    obj = getattr(E, kind)() if kind != "worker" else E.worker()
+    if kind.startswith("prop_"):
+        obj = E.prop(kind)
+    elif kind.startswith("worker"):
+        obj = E.worker(seed=1 if kind == "worker_b" else 0)
+    else:
+        obj = getattr(E, kind)()
     parts = [c for c in obj.children if c.type == "MESH"]
     if not parts:
         print(kind, "fell back to the built-in shape")
         continue
     faces = sum(len(p.data.polygons) for p in parts)
     E.MODELS.clear()
+    E._library.clear()
     man = E.worker()                                   # the built-in 1.75 m figure for scale
     man.location = (0, -4, 0)
     arrow = E._build("arrow", [("box", "drum_orange", (3, 4, 0.1), (6, 0.3, 0.2), 0)])

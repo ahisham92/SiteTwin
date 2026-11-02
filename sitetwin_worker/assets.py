@@ -28,9 +28,33 @@ from typing import Any, Callable
 API = "https://api.sketchfab.com/v3/models/{uid}/download"
 
 #: kind -> the model used for it. Picked by hand from tools/sketchfab_search.py.
-#: (No worker yet: the free figures found are T-posed rigs or carry props; the built-in crews
-#: stand in until a posed scan is found.)
+#: Workers are posed, textured full-body scans; equipment.worker() dresses them in a hi-vis
+#: vest and a hard hat. The props dress the site round the cabins, the gate and the laydown.
 CATALOG: dict[str, dict[str, Any]] = {
+    "worker": {"uid": "e211ffd52a96416e89c0cc415a388d61", "name": "Dennis Posed 004",
+               "author": "renderpeople", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.78},
+    "worker_b": {"uid": "ae9559912f6240a8a87057911b69edd0", "name": "Full Body Scan - Clean Pose",
+                 "author": "OverseerTheVirtual", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.74},
+    "prop_bricks": {"uid": "aeab2b4fd7fb424cb7e68c692048e4f9", "name": "Pallet of Bricks",
+                    "author": "thewalkdead", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.0},
+    "prop_pallet": {"uid": "ee1dc525a33d499bbad75c4e110050cd", "name": "Construction Pallet - Photoscan",
+                    "author": "GameDevNick", "licence": "CC BY 4.0", "yaw": 0.0, "length": 1.2},
+    "prop_paving": {"uid": "0bfb0a34680f489ebcf1f605ed49cf69", "name": "Pile of paving stones on a wooden pallet",
+                    "author": "orphanrtg", "licence": "CC BY 4.0", "yaw": 0.0, "length": 1.2},
+    "prop_barrier": {"uid": "b52246c9611a42a99a03b425535a0237", "name": "Jersey Barrier",
+                     "author": "emran.bayati", "licence": "CC BY 4.0", "yaw": 0.0, "length": 3.0},
+    "prop_cones": {"uid": "e03b1d2dfdc0416bb8324d15573ea60c", "name": "Traffic Cones",
+                   "author": "notanotherartist", "licence": "CC BY 4.0", "yaw": 0.0, "height": 0.75},
+    "prop_skip": {"uid": "f3cf49ea7ad54573a6f5526de75a13d6", "name": "Skip Bin (Scaniverse)",
+                  "author": "db4", "licence": "CC BY 4.0", "yaw": 0.0, "length": 3.8},
+    "prop_rebar": {"uid": "e9cda4a295a34f25a563e583ffaa34fe", "name": "Construction Steel Rebar (Scaniverse)",
+                   "author": "db4", "licence": "CC BY 4.0", "yaw": 0.0, "length": 6.0},
+    "prop_light": {"uid": "9addea6a4129438b83a1fc3ed4a784ec", "name": "Light Tower",
+                   "author": "krambulini", "licence": "CC BY 4.0", "yaw": 0.0, "length": 3.6},
+    "prop_toilet": {"uid": "480c542d5b0240fca1d9ed303800d2bb", "name": "Port-a-john",
+                    "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "height": 2.3},
+    "prop_ibc": {"uid": "41cb527dd5b340878799559d5ed3abd7", "name": "IBC Water Tank",
+                 "author": "Mystyc", "licence": "CC BY 4.0", "yaw": 0.0, "height": 1.16},
     "mixer_truck": {"uid": "8d1d88a5955f4e7da13562bb7bec146f", "name": "Concrete Mixer Truck",
                     "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "length": 9.0},
     "concrete_pump": {"uid": "4328809da1c94ffb95a8eeb60bb6ce9b", "name": "Concrete Pump Truck (Boom Pump)",
@@ -49,9 +73,19 @@ Get = Callable[[str, dict[str, str]], bytes]
 
 
 def _get(url: str, headers: dict[str, str]) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "SiteTwin", **headers})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return r.read()
+    """GET, waiting and trying again when the server says too many requests (Sketchfab does)."""
+    import time
+    import urllib.error
+    for wait in (5, 15, 30, 60, None):
+        req = urllib.request.Request(url, headers={"User-Agent": "SiteTwin", **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or wait is None:
+                raise
+            time.sleep(int(exc.headers.get("Retry-After") or wait))
+    raise RuntimeError("unreachable")
 
 
 def fetch_one(kind: str, entry: dict[str, Any], token: str, cache: Path, get: Get = _get) -> Path:
@@ -82,6 +116,32 @@ def fetch_one(kind: str, entry: dict[str, Any], token: str, cache: Path, get: Ge
     shutil.rmtree(folder, ignore_errors=True)
     tmp.rename(folder)
     return folder / name
+
+
+#: Ground and concrete textures (CC0, Poly Haven, no token needed): role -> asset name.
+TEXTURES = {"gravel": "gravelly_sand", "soil": "brown_mud_dry", "concrete": "concrete_wall_003",
+            "asphalt": "asphalt_02", "formwork": "weathered_brown_planks"}
+POLYHAVEN = "https://api.polyhaven.com/files/{name}"
+
+
+def fetch_textures(cache: Path, get: Get = _get, log=print) -> dict[str, dict[str, str]]:
+    """{role: {"diff": path, "nor": path, "rough": path}} for every texture that could be had."""
+    out: dict[str, dict[str, str]] = {}
+    for role, name in TEXTURES.items():
+        folder = Path(cache) / "textures" / name
+        try:
+            maps = {"diff": "Diffuse", "nor": "nor_gl", "rough": "Rough"}
+            have = {k: folder / f"{k}.jpg" for k in maps}
+            if not all(p.exists() for p in have.values()):
+                files = json.loads(get(POLYHAVEN.format(name=name), {}))
+                folder.mkdir(parents=True, exist_ok=True)
+                for k, key in maps.items():
+                    url = files[key]["2k"]["jpg"]["url"]
+                    have[k].write_bytes(get(url, {}))
+            out[role] = {k: str(p) for k, p in have.items()}
+        except Exception as exc:                          # noqa: BLE001 - the procedural material stands in
+            log(f"  texture for {role} not used: {type(exc).__name__}: {str(exc)[:120]}")
+    return out
 
 
 def prepare(cache: Path, token: str | None = None, get: Get = _get, log=print) -> tuple[dict[str, str], list[str]]:

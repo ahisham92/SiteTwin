@@ -136,6 +136,11 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     models, model_credits = assets.prepare(cache, log=log)
     equipment.MODELS.clear()
     equipment.MODELS.update(models)
+    from . import materials
+    materials.TEXTURES.clear()
+    materials.TEXTURES.update(assets.fetch_textures(cache, log=log))
+    if materials.TEXTURES:
+        model_credits.append("textures: Poly Haven (CC0)")
     if model_credits:
         manifest = dict(manifest, credits=list(manifest.get("credits", [])) + ["Models (Sketchfab): " + "; ".join(model_credits)])
         log(f"  real models: {', '.join(models)}")

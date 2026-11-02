@@ -4,10 +4,15 @@ name: Find free 3D models
 
 on:
   workflow_dispatch:
+    inputs:
+      kinds: {description: "JSON {kind: [queries]} (empty: the defaults)", default: ""}
 
 jobs:
   search:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: python tools/sketchfab_search.py
+      - run: python tools/sketchfab_search.py "$KINDS"
+        env:
+          KINDS: ${{ inputs.kinds }}
+      - run: python tools/polyhaven_list.py | head -70
