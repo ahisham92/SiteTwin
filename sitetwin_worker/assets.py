@@ -50,9 +50,7 @@ CATALOG: dict[str, dict[str, Any]] = {
     "prop_rebar": {"uid": "e9cda4a295a34f25a563e583ffaa34fe", "name": "Construction Steel Rebar (Scaniverse)",
                    "author": "db4", "licence": "CC BY 4.0", "yaw": 0.0, "length": 6.0},
     "prop_light": {"uid": "9addea6a4129438b83a1fc3ed4a784ec", "name": "Light Tower",
-                   "author": "krambulini", "licence": "CC BY 4.0", "yaw": 0.0, "height": 8.0},
-    "prop_generator": {"uid": "f90c68e6e5d84164ac1c36b316a4e9f3", "name": "Jobsite Diesel Generator",
-                       "author": "johnnokomis", "licence": "CC BY 4.0", "yaw": 0.0, "length": 3.2},
+                   "author": "krambulini", "licence": "CC BY 4.0", "yaw": 0.0, "length": 3.6},
     "prop_toilet": {"uid": "480c542d5b0240fca1d9ed303800d2bb", "name": "Port-a-john",
                     "author": "doty_aecom", "licence": "CC BY 4.0", "yaw": 0.0, "height": 2.3},
     "prop_ibc": {"uid": "41cb527dd5b340878799559d5ed3abd7", "name": "IBC Water Tank",
@@ -75,9 +73,19 @@ Get = Callable[[str, dict[str, str]], bytes]
 
 
 def _get(url: str, headers: dict[str, str]) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "SiteTwin", **headers})
-    with urllib.request.urlopen(req, timeout=120) as r:
-        return r.read()
+    """GET, waiting and trying again when the server says too many requests (Sketchfab does)."""
+    import time
+    import urllib.error
+    for wait in (5, 15, 30, 60, None):
+        req = urllib.request.Request(url, headers={"User-Agent": "SiteTwin", **headers})
+        try:
+            with urllib.request.urlopen(req, timeout=120) as r:
+                return r.read()
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or wait is None:
+                raise
+            time.sleep(int(exc.headers.get("Retry-After") or wait))
+    raise RuntimeError("unreachable")
 
 
 def fetch_one(kind: str, entry: dict[str, Any], token: str, cache: Path, get: Get = _get) -> Path:

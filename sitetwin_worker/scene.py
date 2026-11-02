@@ -1000,7 +1000,7 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
 def prop_spots(site: tuple[float, float, float, float], fp, pts: dict[str, Any],
                lane: "L.Lane | None") -> list[tuple[str, float, float, float]]:
     """Where a real site keeps its things: (prop kind, x, y, heading). Barriers line the road
-    outside the gate, cones mark the gate, toilets and the generator stand by the cabins, the
+    outside the gate, cones mark the gate, toilets and water stand by the cabins, the
     skip near the gate, pallets, rebar and water by the laydown, and light towers in the far
     corners. Nothing is put in the truck lane, on the building or outside the hoarding (except
     the road barriers)."""
@@ -1020,9 +1020,7 @@ def prop_spots(site: tuple[float, float, float, float], fp, pts: dict[str, Any],
             want.append(("prop_barrier", *at(t, n), road, False))
     for t in (-5.5, 5.5):
         want.append(("prop_cones", *at(t, -1.5), 0.0, True))
-    want += [("prop_toilet", *at(19.5, -2.0), fence + math.pi, True),
-             ("prop_toilet", *at(21.0, -2.0), fence + math.pi, True),
-             ("prop_generator", *at(14.0, -7.5), fence, True),
+    want += [("prop_toilet", *at(22.0, -2.0), fence + math.pi, True),      # a row of four
              ("prop_ibc", *at(18.5, -7.0), fence, True),
              ("prop_skip", *at(-8.0, -4.0), road, True)]
     for k in range(3):
