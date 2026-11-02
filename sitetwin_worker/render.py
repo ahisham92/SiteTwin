@@ -44,7 +44,7 @@ def _font(size: int, bold: bool = False):
     return ImageFont.load_default()
 
 
-def caption(path: Path, frame: int, tl, title: str, credits: list[str]) -> None:
+def caption(path: Path, frame: int, tl, title: str, credits: list[str], start: dt.date | None = None) -> None:
     """The step being built, a progress bar across the build, and the credits, burnt into the frame."""
     im = Image.open(path).convert("RGB")
     W, H = im.size
@@ -66,6 +66,14 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str]) -> None:
     box_h = int(112 * u)
     d.rectangle([0, H - box_h - pad // 2, W, H], fill=(10, 16, 28, 150))
     d.text((pad, H - box_h), title, font=_font(int(30 * u), True), fill=(255, 255, 255, 255))
+    # the job's own clock: weeks since the site was handed over, and the month it is
+    from .sequence import calendar, day_at
+    day = day_at(calendar(tl), frame)
+    when = (start or dt.date.today()) + dt.timedelta(days=int(day))
+    clock = f"Week {int(day // 7) + 1}  ·  {when.strftime('%B %Y')}"
+    tw = d.textlength(title, font=_font(int(30 * u), True))
+    d.text((pad + tw + int(24 * u), H - box_h + int(6 * u)), clock, font=_font(int(24 * u), True),
+           fill=(245, 165, 36, 255))
     d.text((pad, H - box_h + int(42 * u)), line, font=_font(int(26 * u)), fill=(235, 238, 245, 255))
     span = max(1, tl.build_end - tl.build_start)
     prog = min(1.0, max(0.0, (frame - tl.build_start) / span))
@@ -174,7 +182,7 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
         path = frames_dir / f"frame_{f:05d}.png"
         sc.render.filepath = str(path)
         bpy.ops.render.render(write_still=True)
-        caption(path, f, tl, title, manifest.get("credits", []))
+        caption(path, f, tl, title, manifest.get("credits", []), start=(when or dt.datetime.now()).date())
         if on_frame:
             on_frame(i + 1, len(todo), path)
         if i == 0 or (i + 1) % 25 == 0:

@@ -69,3 +69,36 @@ def test_people_keep_out_of_the_lane_and_from_under_loads():
     for x, y, z in spots:
         assert lane.keeps_clear((x, y)) and z == 4.0
         assert all(math.dist((x, y), a) >= 3.0 for a in avoid)
+
+
+def test_a_tracked_machine_turns_on_the_spot_then_drives_front_first():
+    keys = L.drive([(0, 0), (10, 0), (10, 10)], [0, 20, 40], z=0.0)
+    m = L.Machine("excavator", 4.0, keys)
+    for f in range(0, 41):
+        x, y, h, _ = m.at(f)
+        x2, y2, _, _ = m.at(min(40, f + 1))
+        if math.dist((x, y), (x2, y2)) > 1e-6:                # moving: along its heading, never sideways
+            assert abs(math.atan2(y2 - y, x2 - x) - h) < 1e-6 or abs(abs(math.atan2(y2 - y, x2 - x) - h) - 2 * math.pi) < 1e-6
+    assert m.at(20)[:2] == (10, 0) and m.at(40)[:2] == (10, 10)
+
+
+def test_crews_never_stand_in_a_machines_reach():
+    keys = L.drive([(-5, 0), (5, 0)], [0, 30], z=0.0)
+    m = L.Machine("excavator", 5.0, keys)
+    spots = L.crew_spots(10, (-15, -15, 15, 15), 0.0, random.Random(3), None, [], machines=[m], frames=(0, 30))
+    assert len(spots) == 10
+    for p in spots:
+        assert m.clear_of(p, 0, 30, gap=1.5, step=1)
+
+
+def test_the_films_calendar_runs_at_the_jobs_real_pace():
+    from sitetwin_worker import sequence as S
+    steps = [S.Step(n=1, storey="Site", phase="Foundations", start=10, end=40),
+             S.Step(n=2, storey="L1", phase="Horizontal structure", start=40, end=60)]
+    tl = S.Timeline(fps=10, frames=70, build_start=10, build_end=60, steps=steps, appear={})
+    cal = S.calendar(tl)
+    assert S.day_at(cal, 0) == 0
+    assert S.day_at(cal, 10) == 21                         # three weeks setting up
+    assert S.day_at(cal, 40) == 21 + 56                    # foundations: 40 working days
+    assert S.day_at(cal, 70) == 21 + 56 + 14
+    assert all(S.day_at(cal, f) <= S.day_at(cal, f + 1) for f in range(70))
