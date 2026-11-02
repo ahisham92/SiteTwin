@@ -251,9 +251,13 @@ def find_trees(xy: np.ndarray, z: np.ndarray, ground: np.ndarray, colour: np.nda
     c = colour
     # photo greens are dark and dusty: greener than red and blue, by a little
     green = (c[:, 1] >= c[:, 0] * 0.98) & (c[:, 1] > c[:, 2] * 1.03) & (c[:, 1] < 0.5)
-    tall = (over > 2.0) & (over < 20.0) & (np.hypot(xy[:, 0], xy[:, 1]) < radius)
+    # Google meshes a tree as a low soft mound: anything a metre up counts
+    tall = (over > 1.0) & (over < 20.0) & (np.hypot(xy[:, 0], xy[:, 1]) < radius)
     cand = green & tall
-    print(f"  trees: {int(green.sum())} green points, {int(tall.sum())} standing, {int(cand.sum())} both")
+    if green.any():
+        q = np.percentile(over[green], [50, 90, 99])
+        print(f"  trees: {int(green.sum())} green points (height over ground 50/90/99%: "
+              f"{q[0]:.1f}/{q[1]:.1f}/{q[2]:.1f} m), {int(tall.sum())} standing, {int(cand.sum())} both")
     cand &= ~((xy[:, 0] > kx0 - 4) & (xy[:, 0] < kx1 + 4) & (xy[:, 1] > ky0 - 4) & (xy[:, 1] < ky1 + 4))
     idx = np.flatnonzero(cand)
     for b in buildings:                                   # never a tree on a roof
