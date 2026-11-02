@@ -112,3 +112,11 @@ def test_cars_park_at_kerbs_clear_of_site():
         assert math.hypot(max(-10 - x, x - 10, 0), max(-10 - y, y - 10, 0)) > 15
     assert life["moving"]
     assert life["street_trees"]
+
+
+def test_parks_get_trees_but_not_the_site():
+    g = (np.zeros((60, 60)), -120.0, 4.0)
+    park = [[30, 30], [90, 30], [90, 90], [30, 90], [30, 30]]
+    life = N.street_life([], [], g, (-10, -10, 10, 10), clear=15.0, radius=150, greens=[park])
+    assert len(life["street_trees"]) > 20
+    assert all(30 <= x <= 90 and 30 <= y <= 90 for x, y, z, h in life["street_trees"])

@@ -102,13 +102,19 @@ def plan(elements: list[Element], seconds: float = 90.0, fps: int = 30,
     frames = int(round(seconds * fps))
     fly_end = clear_start = clear_end = 0
     if opening:
-        lead = min(20.0, seconds * 0.24)
-        fly_end = int(fps * lead * 0.45) if fly_in else 0
-        if not fly_in:
-            lead *= 0.55                                  # no flight: the clearing comes sooner
-        clear_start = fly_end + int(fps * lead * 0.12)
-        clear_end = clear_start + int(fps * lead * 0.33)
-        build_start = clear_end + int(fps * lead * 0.10)
+        if fly_in:
+            lead = min(20.0, seconds * 0.24)
+            fly_end = int(fps * lead * 0.45)
+            clear_start = fly_end + int(fps * lead * 0.12)
+            clear_end = clear_start + int(fps * lead * 0.33)
+            build_start = clear_end + int(fps * lead * 0.10)
+        else:
+            # no flight: the site as it is today must still be seen (at least a second), its
+            # clearing followed, and the set-up shown, even in a short film
+            lead = min(15.0, max(3.3, seconds * 0.3))
+            clear_start = int(fps * lead * 0.30)
+            clear_end = clear_start + int(fps * lead * 0.45)
+            build_start = clear_end + int(fps * lead * 0.25)
     else:
         build_start = int(frames * intro)
     build_end = int(frames * (1 - outro))
