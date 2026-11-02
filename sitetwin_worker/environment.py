@@ -232,9 +232,26 @@ def features_from_osm(data: dict[str, Any], local: Local) -> list[dict[str, Any]
     return out
 
 
-def fetch_osm(local: Local, radius: float, fetch: Fetch, url: str) -> list[dict[str, Any]]:
+#: Public Overpass servers tried in turn when one is busy (they often answer 502/504 under load).
+OVERPASS_MIRRORS = ("https://overpass-api.de/api/interpreter",
+                    "https://overpass.kumi.systems/api/interpreter",
+                    "https://overpass.private.coffee/api/interpreter")
+
+
+def fetch_osm(local: Local, radius: float, fetch: Fetch, url: str, wait=None) -> list[dict[str, Any]]:
+    """OpenStreetMap features round the site; a busy server is retried, then the mirrors."""
+    import time
+    wait = wait or time.sleep
     body = urllib.parse.urlencode({"data": overpass_query(local, radius)}).encode()
-    return features_from_osm(json.loads(fetch(url, body)), local)
+    urls = [url] + [u for u in OVERPASS_MIRRORS if u != url]
+    last: Exception | None = None
+    for attempt, u in enumerate([urls[0], urls[0]] + urls[1:]):
+        try:
+            return features_from_osm(json.loads(fetch(u, body)), local)
+        except Exception as exc:                          # noqa: BLE001 - try again elsewhere
+            last = exc
+            wait(min(20, 4 * (attempt + 1)))
+    raise last if last else RuntimeError("no Overpass server answered")
 
 
 # ---- all of it --------------------------------------------------------------------------

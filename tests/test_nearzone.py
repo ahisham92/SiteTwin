@@ -62,3 +62,18 @@ def test_inside_buffer():
     pts = np.array([[5, 5], [11, 5], [12, 5], [-0.5, -0.5]])
     assert N.inside(pts, sq).tolist() == [True, False, False, False]
     assert N.inside(pts, sq, 1.5).tolist() == [True, True, False, True]
+
+
+def test_osm_is_retried_on_a_busy_server():
+    from sitetwin_worker import environment as E
+    calls = []
+
+    def fetch(url, body=None):
+        calls.append(url)
+        if len(calls) < 3:
+            raise OSError("HTTP Error 502: Bad Gateway")
+        return b'{"elements": []}'
+
+    local = E.Local(33.89, 35.50) if hasattr(E, "Local") else None
+    assert E.fetch_osm(local, 100, fetch, E.OVERPASS_MIRRORS[0], wait=lambda s: None) == []
+    assert len(calls) == 3 and calls[2] != calls[0]
