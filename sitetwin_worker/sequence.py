@@ -96,14 +96,16 @@ def phase_of(e: Element) -> str:
 
 
 def plan(elements: list[Element], seconds: float = 90.0, fps: int = 30,
-         intro: float = 0.08, outro: float = 0.12, opening: bool = True) -> Timeline:
+         intro: float = 0.08, outro: float = 0.12, opening: bool = True, fly_in: bool = True) -> Timeline:
     """``opening``: begin with the flight down from space and the clearing of the site as it is
     (about a quarter of the film, never more than 20 s), before the hoarding goes up."""
     frames = int(round(seconds * fps))
     fly_end = clear_start = clear_end = 0
     if opening:
         lead = min(20.0, seconds * 0.24)
-        fly_end = int(fps * lead * 0.45)
+        fly_end = int(fps * lead * 0.45) if fly_in else 0
+        if not fly_in:
+            lead *= 0.55                                  # no flight: the clearing comes sooner
         clear_start = fly_end + int(fps * lead * 0.12)
         clear_end = clear_start + int(fps * lead * 0.33)
         build_start = clear_end + int(fps * lead * 0.10)

@@ -8,7 +8,8 @@ on:
     inputs:
       lat: {description: "Latitude", default: "33.8938"}
       lon: {description: "Longitude", default: "35.5018"}
-      seconds: {description: "Length in seconds", default: "60"}
+      seconds: {description: "Length in seconds", default: "10"}
+      earth: {description: "Open with the flight from space (yes or no)", default: "no"}
       quality: {description: "preview, draft, final or 4k", default: "draft"}
       ifc: {description: "IFC in the repository", default: "samples/sample-building.ifc"}
 
@@ -32,10 +33,11 @@ jobs:
           SECONDS: ${{ inputs.seconds }}
           QUALITY: ${{ inputs.quality }}
           IFC: ${{ inputs.ifc }}
+          EARTH: ${{ inputs.earth }}
         run: |
           export MODAL_TOKEN_ID="$(printf '%s' "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
           export MODAL_TOKEN_SECRET="$(printf '%s' "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
-          modal run modal_app.py::sample --ifc "$IFC" --lat "$LAT" --lon "$LON" --seconds "$SECONDS" --quality "$QUALITY" --out film.mp4
+          modal run modal_app.py::sample --ifc "$IFC" --lat "$LAT" --lon "$LON" --seconds "$SECONDS" --quality "$QUALITY" --earth "$EARTH" --out film.mp4
       - uses: actions/upload-artifact@v4
         with:
           name: sitetwin-sample-film

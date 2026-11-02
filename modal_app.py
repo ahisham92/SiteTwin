@@ -77,7 +77,8 @@ def render_chunk(job_dir: str, args: dict, first: int, last: int, jid: int = 0) 
         rep.preview(path)
 
     res = run(folder / "model.ifc", folder, args["lat"], args["lon"], seconds=args["seconds"],
-              quality=args["quality"], title=args["title"], chunk=(first, last), on_frame=frame)
+              quality=args["quality"], title=args["title"], chunk=(first, last), on_frame=frame,
+              fly_in=args.get("fly_in", True))
     work.commit()
     return {"segment": res["segment"], "seconds": time.time() - t, "first": first}
 
@@ -163,7 +164,8 @@ def handle_job(got: dict) -> None:
 
 
 @app.function(image=render_image, volumes={"/work": work}, timeout=6 * 3600, secrets=[secret])
-def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str, title: str) -> dict:
+def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str, title: str,
+                fly_in: bool = True) -> dict:
     """A film of any model at any place, without the site: for trying changes out."""
     import shutil
     import uuid
@@ -173,10 +175,10 @@ def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str
     folder = Path(f"/work/sample_{uuid.uuid4().hex[:8]}")
     folder.mkdir(parents=True)
     (folder / "model.ifc").write_bytes(ifc)
-    args = {"lat": lat, "lon": lon, "seconds": seconds, "quality": quality, "title": title}
+    args = {"lat": lat, "lon": lon, "seconds": seconds, "quality": quality, "title": title, "fly_in": fly_in}
     try:
         prep = run(folder / "model.ifc", folder, lat, lon, seconds=seconds, quality=quality, title=title,
-                   prepare_only=True)
+                   prepare_only=True, fly_in=fly_in)
         work.commit()
         runs = chunks(prep["frames"], prep["fps"], MAX_GPUS)
         results = list(render_chunk.starmap([(str(folder), args, a, b, 0) for a, b in runs]))
@@ -196,8 +198,9 @@ def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str
 
 @app.local_entrypoint()
 def sample(ifc: str = "samples/sample-building.ifc", lat: float = 33.66, lon: float = 35.42,
-           seconds: float = 60, quality: str = "draft", title: str = "SiteTwin sample", out: str = "film.mp4"):
-    got = sample_film.remote(Path(ifc).read_bytes(), lat, lon, seconds, quality, title)
+           seconds: float = 60, quality: str = "draft", title: str = "SiteTwin sample", out: str = "film.mp4",
+           earth: str = "no"):
+    got = sample_film.remote(Path(ifc).read_bytes(), lat, lon, seconds, quality, title, earth == "yes")
     Path(out).write_bytes(got.pop("video"))
     print(f"Written {out}: {got}")
 
