@@ -10,6 +10,11 @@ from __future__ import annotations
 from typing import Any
 
 _cache: dict[str, Any] = {}
+#: Photo textures to use where they were fetched (see assets.fetch_textures): role -> maps.
+TEXTURES: dict[str, dict[str, str]] = {}
+#: How many metres one repeat of each texture covers.
+TEXTURE_SIZE = {"gravel": 3.0, "soil": 4.0, "concrete": 2.5, "concrete_fresh": 2.5, "asphalt": 4.0,
+                "formwork": 2.4}
 
 
 def _principled(name: str):
@@ -47,10 +52,58 @@ def _noise_mix(tree, bsdf, c1, c2, scale=6.0, detail=8.0, rough=(0.6, 0.9), bump
         tree.links.new(b.outputs["Normal"], bsdf.inputs["Normal"])
 
 
+def _textured(name: str, maps: dict[str, str], size: float, tint: tuple | None = None):
+    """A material from photo maps, projected on all six sides in world metres (no UVs needed)."""
+    import bpy
+    m, bsdf, tree = _principled("st_" + name)
+    n = tree.nodes
+    tc = n.new("ShaderNodeTexCoord")
+    mp = n.new("ShaderNodeMapping")
+    mp.inputs["Scale"].default_value = (1 / size, 1 / size, 1 / size)
+    tree.links.new(tc.outputs["Object"], mp.inputs["Vector"])
+
+    def image(key: str, colour: bool):
+        t = n.new("ShaderNodeTexImage")
+        t.image = bpy.data.images.load(maps[key], check_existing=True)
+        if not colour:
+            t.image.colorspace_settings.name = "Non-Color"
+        t.projection = "BOX"
+        t.projection_blend = 0.25
+        tree.links.new(mp.outputs["Vector"], t.inputs["Vector"])
+        return t
+
+    diff = image("diff", True)
+    colour = diff.outputs["Color"]
+    if tint:
+        mix = n.new("ShaderNodeMix")
+        mix.data_type = "RGBA"
+        mix.blend_type = "MULTIPLY"
+        mix.inputs["Factor"].default_value = 1.0
+        tree.links.new(colour, mix.inputs["A"])
+        mix.inputs["B"].default_value = (*tint, 1)
+        colour = mix.outputs["Result"]
+    tree.links.new(colour, bsdf.inputs["Base Color"])
+    tree.links.new(image("rough", False).outputs["Color"], bsdf.inputs["Roughness"])
+    nm = n.new("ShaderNodeNormalMap")
+    nm.inputs["Strength"].default_value = 0.8
+    tree.links.new(image("nor", False).outputs["Color"], nm.inputs["Color"])
+    tree.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    return m
+
+
 def get(name: str):
     """A material by its role, made once."""
     if name in _cache:
         return _cache[name]
+    role = "concrete" if name == "concrete_fresh" else name
+    if role in TEXTURES:
+        try:
+            m = _textured(name, TEXTURES[role], TEXTURE_SIZE.get(name, 3.0),
+                          (0.85, 0.85, 0.85) if name == "concrete_fresh" else None)
+            _cache[name] = m
+            return m
+        except Exception:                                 # noqa: BLE001 - procedural below
+            pass
     m, bsdf, tree = _principled("st_" + name)
     if name == "concrete":
         _noise_mix(tree, bsdf, (0.40, 0.39, 0.37), (0.52, 0.51, 0.48), scale=3, rough=(0.75, 0.95))

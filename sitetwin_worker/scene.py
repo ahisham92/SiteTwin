@@ -988,12 +988,79 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     build_model(elements, tl)
     build_plant(elements, tl, fp, top, pts, pit_depth, rng, plan)
     build_crews(tl, fp, pts, pit_depth, rng, plan)
+    build_props(g, fp, pts, plan, rng)
     elev, az = build_light(manifest["lat"], manifest["lon"], opts.when)
     build_camera(fp, top, tl, opts, pts["out"])
     _all_constant_hides()
     configure_render(opts, tl.frames, out_dir)
     return {"gate_side": gate_side, "pit_depth": pit_depth, "google": google_level is not None, "sun": [round(elev, 1), round(az, 1)],
             "top": top, "footprint": fp}
+
+
+def prop_spots(site: tuple[float, float, float, float], fp, pts: dict[str, Any],
+               lane: "L.Lane | None") -> list[tuple[str, float, float, float]]:
+    """Where a real site keeps its things: (prop kind, x, y, heading). Barriers line the road
+    outside the gate, cones mark the gate, toilets and the generator stand by the cabins, the
+    skip near the gate, pallets, rebar and water by the laydown, and light towers in the far
+    corners. Nothing is put in the truck lane, on the building or outside the hoarding (except
+    the road barriers)."""
+    gx, gy = pts["gate"]
+    nx, ny = pts["out"]
+    tx, ty = pts["along"]
+    lx, ly = pts["laydown"]
+    road = math.atan2(ny, nx)
+    fence = math.atan2(ty, tx)
+
+    def at(t: float, n: float) -> tuple[float, float]:
+        return gx + tx * t + nx * n, gy + ty * t + ny * n
+
+    want: list[tuple[str, float, float, float, bool]] = []      # kind, x, y, heading, inside
+    for n in (6.0, 10.0, 14.0):
+        for t in (-6.5, 6.5):
+            want.append(("prop_barrier", *at(t, n), road, False))
+    for t in (-5.5, 5.5):
+        want.append(("prop_cones", *at(t, -1.5), 0.0, True))
+    want += [("prop_toilet", *at(19.5, -2.0), fence + math.pi, True),
+             ("prop_toilet", *at(21.0, -2.0), fence + math.pi, True),
+             ("prop_generator", *at(14.0, -7.5), fence, True),
+             ("prop_ibc", *at(18.5, -7.0), fence, True),
+             ("prop_skip", *at(-8.0, -4.0), road, True)]
+    for k in range(3):
+        want.append(("prop_bricks", lx - nx * 6 + tx * (k * 1.8 - 1.8), ly - ny * 6 + ty * (k * 1.8 - 1.8), fence, True))
+    want.append(("prop_paving", lx - nx * 6 + tx * 3.8, ly - ny * 6 + ty * 3.8, fence, True))
+    want.append(("prop_pallet", lx - nx * 8 + tx * 0.5, ly - ny * 8 + ty * 0.5, fence + 0.3, True))
+    want.append(("prop_rebar", lx - tx * 9.5 - nx * 1.0, ly - ty * 9.5 - ny * 1.0, fence, True))
+    # light towers in the two corners furthest from the gate
+    x0, y0, x1, y1 = site
+    corners = sorted([(x0 + 2.5, y0 + 2.5), (x1 - 2.5, y0 + 2.5), (x1 - 2.5, y1 - 2.5), (x0 + 2.5, y1 - 2.5)],
+                     key=lambda c: -math.hypot(c[0] - gx, c[1] - gy))
+    cx, cy = (fp[0] + fp[2]) / 2, (fp[1] + fp[3]) / 2
+    for x, y in corners[:2]:
+        want.append(("prop_light", x, y, math.atan2(cy - y, cx - x), True))
+
+    out = []
+    for kind, x, y, h, inside in want:
+        if inside and not (x0 + 0.8 < x < x1 - 0.8 and y0 + 0.8 < y < y1 - 0.8):
+            continue
+        if fp[0] - 2 < x < fp[2] + 2 and fp[1] - 2 < y < fp[3] + 2:
+            continue                                         # never on the building
+        if lane is not None and inside and not lane.keeps_clear((x, y), margin=1.0):
+            continue
+        out.append((kind, x, y, h))
+    return out
+
+
+def build_props(g: Ground, fp, pts: dict[str, Any], plan: dict[str, Any], rng: random.Random) -> int:
+    """The site's clutter, from real models where there are any. Returns how many were placed."""
+    n = 0
+    for kind, x, y, h in prop_spots(g.site, fp, pts, plan.get("lane")):
+        obj = E.prop(kind)
+        if obj is None:
+            continue
+        obj.location = (x, y, 0.02)
+        obj.rotation_euler = (0, 0, h + rng.uniform(-0.06, 0.06))
+        n += 1
+    return n
 
 
 def _floor_of(st, elements: list[Element]) -> float:
