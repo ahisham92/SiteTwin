@@ -42,7 +42,7 @@ for kind in files:
         obj = E.worker(seed=1 if kind == "worker_b" else 0)
     else:
         obj = getattr(E, kind)()
-    parts = [c for c in obj.children if c.type == "MESH"]
+    parts = [c for c in obj.children_recursive if c.type == "MESH"]
     if not parts:
         print(kind, "fell back to the built-in shape")
         continue

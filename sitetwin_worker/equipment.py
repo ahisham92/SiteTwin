@@ -118,30 +118,75 @@ def _load(kind: str, path: Path, height: float, yaw: float, length: float | None
     return meshes
 
 
-def _split(meshes: list, gap: float = 0.3) -> list[list]:
-    """Group a pack's meshes into its separate models: meshes whose plan footprints touch (within
-    ``gap``) belong together."""
-    boxes = []
+def _split(meshes: list, cells: int = 300) -> list[list]:
+    """Cut a pack (several models side by side, often in one mesh) into its separate models.
+    Every face is drawn on a plan grid ``cells`` across; touching patches of the grid are one
+    model (a car's wheels lie under its body, a tree's leaves over its trunk). A face spanning
+    much of the pack (a ground plane under them all) is dropped."""
+    import bmesh
+    import numpy as np
+    per = []
     for d in meshes:
-        xs = [v.co.x for v in d.vertices] or [0.0]
-        ys = [v.co.y for v in d.vertices] or [0.0]
-        boxes.append((min(xs), min(ys), max(xs), max(ys)))
-    parent = list(range(len(meshes)))
-
-    def find(i):
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-    for i, a in enumerate(boxes):
-        for j in range(i + 1, len(boxes)):
-            b = boxes[j]
-            if a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]:
-                parent[find(i)] = find(j)
-    groups: dict[int, list] = {}
-    for i, d in enumerate(meshes):
-        groups.setdefault(find(i), []).append(d)
-    return list(groups.values())
+        n = len(d.vertices)
+        co = np.empty(n * 3)
+        d.vertices.foreach_get("co", co)
+        per.append(co.reshape(n, 3)[:, :2])
+    allxy = np.concatenate(per) if per else np.zeros((1, 2))
+    lo, hi = allxy.min(axis=0), allxy.max(axis=0)
+    ext = float(max(hi - lo)) or 1.0
+    cell = ext / cells
+    nx, ny = (int((hi - lo)[0] / cell) + 3, int((hi - lo)[1] / cell) + 3)
+    occ = np.zeros((nx, ny), bool)
+    faces = []                                        # (mesh index, face index, cell) per face
+    for mi, (d, xy) in enumerate(zip(meshes, per)):
+        for poly in d.polygons:
+            vs = xy[list(poly.vertices)]
+            span = vs.max(axis=0) - vs.min(axis=0)
+            if max(span) > 0.4 * ext:
+                continue
+            ij = ((vs - lo) / cell).astype(int) + 1
+            i0, j0 = ij.min(axis=0)
+            i1, j1 = ij.max(axis=0)
+            occ[i0:i1 + 1, j0:j1 + 1] = True
+            c = ((vs.mean(axis=0) - lo) / cell).astype(int) + 1
+            faces.append((mi, poly.index, (int(c[0]), int(c[1]))))
+    label = np.full(occ.shape, -1, int)
+    n_lab = 0
+    for i, j in zip(*np.nonzero(occ)):
+        if label[i, j] >= 0:
+            continue
+        stack = [(i, j)]
+        label[i, j] = n_lab
+        while stack:
+            a, b = stack.pop()
+            for da in (-1, 0, 1):
+                for db in (-1, 0, 1):
+                    p, q = a + da, b + db
+                    if 0 <= p < nx and 0 <= q < ny and occ[p, q] and label[p, q] < 0:
+                        label[p, q] = n_lab
+                        stack.append((p, q))
+        n_lab += 1
+    keep: dict[int, dict[int, set]] = {}
+    for mi, fi, (i, j) in faces:
+        keep.setdefault(int(label[i, j]), {}).setdefault(mi, set()).add(fi)
+    sizes = {k: sum(len(v) for v in m.values()) for k, m in keep.items()}
+    big = max(sizes.values()) if sizes else 0
+    out = []
+    for k, by_mesh in keep.items():
+        if k < 0 or sizes[k] < 0.02 * big:                # crumbs, not a model
+            continue
+        group = []
+        for mi, fis in by_mesh.items():
+            bm = bmesh.new()
+            bm.from_mesh(meshes[mi])
+            bm.faces.ensure_lookup_table()
+            bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.index not in fis], context="FACES")
+            d = meshes[mi].copy()
+            bm.to_mesh(d)
+            bm.free()
+            group.append(d)
+        out.append(group)
+    return out
 
 
 def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float | None) -> list[list]:
