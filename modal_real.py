@@ -38,14 +38,15 @@ image = (
 PROMPT = ("Real aerial drone footage, slowly orbiting a construction site in the middle of Beirut: "
           "a reinforced concrete frame building under construction with grey concrete columns, "
           "slabs and timber formwork, a yellow tower crane, workers in orange hi-vis vests and white "
-          "helmets, concrete mixer trucks, green site hoarding around the plot. Around it a dense "
+          "helmets, concrete mixer trucks, bare compacted soil and gravel round the building, low dark "
+          "green metal hoarding panels along the plot edge. Around it a dense "
           "real city: beige and white apartment blocks with balconies, asphalt streets with parked "
           "cars, palm and pine trees, a busy highway. Clear sunny daylight, soft shadows, sharp "
-          "detail, photorealistic, shot on a DJI Mavic drone, 4K documentary footage.")
+          "detail, natural muted colours, photorealistic, shot on a DJI Mavic drone, 4K documentary footage.")
 NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic, toy, low poly, "
             "blurry, smeared, distorted, warped buildings, flicker, text, watermark, subtitles, "
             "overexposed, oversaturated, worst quality, low quality, JPEG artifacts, mosaic, "
-            "tiles pattern, cracked texture, black ground, abstract pattern")
+            "tiles pattern, cracked texture, black ground, abstract pattern, neon colours")
 
 
 def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
@@ -63,7 +64,11 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
 
 @app.function(image=image, gpu=GPU, volumes={"/models": models}, timeout=3 * 3600)
 def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int = 30,
-            width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7) -> dict:
+            width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7,
+            control: str = "depth", near: float = 0.6) -> dict:
+    """``control``: "depth" guides by depth alone; "mix" guides the near part (the nearest
+    ``near`` share of each frame) by depth and the rest by our render in grey, so the AI keeps
+    the real streets and blocks round the site (it colours them) instead of inventing new ones."""
     import tempfile
     import time
 
@@ -97,6 +102,10 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         # which a plain scale leaves near black, still give the AI their shapes
         ranks = np.argsort(np.argsort(d.ravel()))
         d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
+        if control == "mix":
+            grey = np.asarray(f.convert("L").resize((d.shape[1], d.shape[0])), dtype=np.float32)
+            far = d < (1.0 - near) * 255                  # depth-anything: bigger is nearer
+            d = np.where(far, grey, d)
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
     torch.cuda.empty_cache()
@@ -126,13 +135,14 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(plain), "-i", str(real),
                     "-filter_complex", "hstack", "-c:v", "libx264", "-crf", "18", str(side)], check=True)
     return {"real": real.read_bytes(), "side": side.read_bytes(), "frames": len(out_frames),
-            "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL}
+            "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL,
+            "control": control}
 
 
 @app.local_entrypoint()
 def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, steps: int = 30,
-         scale: float = 1.0):
-    got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale)
+         scale: float = 1.3, control: str = "mix"):
+    got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale, control=control)
     Path(out).write_bytes(got.pop("real"))
     Path(out).with_name(Path(out).stem + "-side.mp4").write_bytes(got.pop("side"))
     print(f"Written {out}: {got}")
