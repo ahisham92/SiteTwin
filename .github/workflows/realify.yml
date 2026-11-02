@@ -1,0 +1,57 @@
+name: Make a sample film real (own AI)
+
+# Runs SiteTwin Real (modal_real.py: Depth Anything + Wan VACE, open models on our own Modal
+# GPU) over a sample film kept on the sample-films branch, and keeps the result and a side by
+# side comparison on that branch. Costs GPU time only: run it by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id: {description: "Run id of the sample film on sample-films", required: true}
+      seconds: {description: "How many seconds of it", default: "5"}
+      steps: {description: "Denoising steps", default: "30"}
+      scale: {description: "How strictly to follow our 3D (0.5 to 1.5)", default: "1.0"}
+
+permissions:
+  contents: write
+
+jobs:
+  real:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "modal>=1.0"
+      - name: Fetch the film
+        env: {RUN: "${{ inputs.run_id }}"}
+        run: |
+          git fetch -q origin sample-films
+          git show "origin/sample-films:film-$RUN.mp4" > film.mp4
+      - name: Make it real
+        env:
+          SECONDS_IN: ${{ inputs.seconds }}
+          STEPS: ${{ inputs.steps }}
+          SCALE: ${{ inputs.scale }}
+        run: |
+          export MODAL_TOKEN_ID="$(printf '%s' "$MODAL_TOKEN_ID" | tr -d '[:space:]')"
+          export MODAL_TOKEN_SECRET="$(printf '%s' "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')"
+          modal run modal_real.py --src film.mp4 --out real.mp4 --seconds "$SECONDS_IN" --steps "$STEPS" --scale "$SCALE"
+      - name: Keep it on sample-films
+        env:
+          RUN: ${{ inputs.run_id }}
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir out && mv real.mp4 "out/real-$RUN-${{ github.run_id }}.mp4" && mv real-side.mp4 "out/real-side-$RUN-${{ github.run_id }}.mp4"
+          cd out
+          git init -q -b sample-films
+          git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
+          git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
+          git fetch -q origin sample-films && git reset -q --soft FETCH_HEAD || true
+          git add . && git commit -qm "Real pass of film $RUN" && git push -q origin HEAD:sample-films
