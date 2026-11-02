@@ -35,14 +35,17 @@ image = (
     .env({"HF_HOME": "/models/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0"})
 )
 
-PROMPT = ("Real aerial drone footage of a construction site in a Mediterranean city: a reinforced "
-          "concrete frame building under construction with columns, slabs and formwork, a yellow "
-          "tower crane, workers in orange hi-vis and white helmets, concrete mixer trucks, site "
-          "hoarding, surrounded by real apartment buildings, streets, parked cars and trees. "
-          "Natural daylight, sharp detail, photorealistic, shot on a DJI drone, 4K documentary.")
+PROMPT = ("Real aerial drone footage, slowly orbiting a construction site in the middle of Beirut: "
+          "a reinforced concrete frame building under construction with grey concrete columns, "
+          "slabs and timber formwork, a yellow tower crane, workers in orange hi-vis vests and white "
+          "helmets, concrete mixer trucks, green site hoarding around the plot. Around it a dense "
+          "real city: beige and white apartment blocks with balconies, asphalt streets with parked "
+          "cars, palm and pine trees, a busy highway. Clear sunny daylight, soft shadows, sharp "
+          "detail, photorealistic, shot on a DJI Mavic drone, 4K documentary footage.")
 NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic, toy, low poly, "
             "blurry, smeared, distorted, warped buildings, flicker, text, watermark, subtitles, "
-            "overexposed, oversaturated, worst quality, low quality, JPEG artifacts")
+            "overexposed, oversaturated, worst quality, low quality, JPEG artifacts, mosaic, "
+            "tiles pattern, cracked texture, black ground, abstract pattern")
 
 
 def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
@@ -87,7 +90,10 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     depth = []
     for f in frames:
         d = np.array(depth_model(f)["depth"], dtype=np.float32)
-        d = (d - d.min()) / max(1e-6, d.max() - d.min()) * 255
+        # spread the values evenly (histogram equalisation), so the far streets and buildings,
+        # which a plain scale leaves near black, still give the AI their shapes
+        ranks = np.argsort(np.argsort(d.ravel()))
+        d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
     torch.cuda.empty_cache()
