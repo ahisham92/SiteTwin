@@ -186,11 +186,11 @@ def get(name: str):
     """A material by its role, made once."""
     if name in _cache:
         return _cache[name]
-    role = "concrete" if name == "concrete_fresh" else name
+    role = {"concrete_fresh": "concrete", "asphalt_road": "asphalt"}.get(name, name)
+    tint = {"concrete_fresh": (0.85, 0.85, 0.85), "asphalt_road": (0.45, 0.45, 0.47)}.get(name)
     if role in TEXTURES:
         try:
-            m = _textured(name, TEXTURES[role], TEXTURE_SIZE.get(name, 3.0),
-                          (0.85, 0.85, 0.85) if name == "concrete_fresh" else None)
+            m = _textured(name, TEXTURES[role], TEXTURE_SIZE.get(name, 3.0), tint)
             _cache[name] = m
             return m
         except Exception:                                 # noqa: BLE001 - procedural below
@@ -228,7 +228,7 @@ def get(name: str):
         _noise_mix(tree, bsdf, (0.13, 0.22, 0.07), (0.22, 0.30, 0.10), scale=0.2, detail=10, rough=(0.8, 1.0), bump=0.3)
     elif name == "sand":
         _noise_mix(tree, bsdf, (0.72, 0.63, 0.47), (0.80, 0.72, 0.56), scale=0.3, rough=(0.85, 1.0), bump=0.2)
-    elif name == "asphalt":
+    elif name in ("asphalt", "asphalt_road"):
         _noise_mix(tree, bsdf, (0.07, 0.07, 0.075), (0.13, 0.13, 0.135), scale=2, detail=12, rough=(0.75, 0.95), bump=0.2)
     elif name == "rail":
         _noise_mix(tree, bsdf, (0.20, 0.17, 0.14), (0.28, 0.25, 0.22), scale=3, rough=(0.8, 1.0))

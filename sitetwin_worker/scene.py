@@ -562,7 +562,7 @@ def rebuild_near(tiles: list, level: float, keep_out, feats: list) -> dict:
     for i, road in enumerate(out["roads"]):
         v, f, lv, lf = NZ.road_quads(road, out["grid"], NZ.RADIUS, keep_out, lift=0.06 + 0.003 * (i % 5))
         if f:
-            _mesh("near_road", [(x, y, z) for x, y, z in v], f, M.get("asphalt"))
+            _mesh("near_road", [(x, y, z) for x, y, z in v], f, M.get("asphalt_road"))
         if lf:
             _mesh("near_road_lines", lv, lf, M.get("road_paint"))
     return {"buildings": len(out["buildings"]), "roads": len(out["roads"])}

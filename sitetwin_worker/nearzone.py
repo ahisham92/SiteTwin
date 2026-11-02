@@ -167,7 +167,8 @@ def plan(xyz: np.ndarray, colour: np.ndarray, steep: np.ndarray, feats: list[dic
 
     roads = []
     for f in feats:
-        if f.get("kind") != "road" or f.get("class") in ("footway", "path", "cycleway", "track"):
+        if f.get("kind") != "road" or f.get("class") in ("footway", "path", "cycleway", "track",
+                                                          "motorway", "trunk") or f.get("raised"):
             continue
         pts = [p for p in f["points"]]
         if not any(_seg_dist(a, b) < radius for a, b in zip(pts[:-1], pts[1:])):
@@ -217,8 +218,10 @@ def road_quads(road: dict[str, Any], grid, radius: float, keep_out, lift: float 
             mx, my = (p0[0] + p1[0]) / 2, (p0[1] + p1[1]) / 2
             if math.hypot(mx, my) > radius or (kx0 - w - 2 <= mx <= kx1 + w + 2 and ky0 - w - 2 <= my <= ky1 + w + 2):
                 continue
-            for off0, off1, vs, fs in ((-w, w, verts, faces),
-                                       (w - 0.45, w - 0.3, lv, lf), (-w + 0.3, -w + 0.45, lv, lf)):
+            strips = [(-w, w, verts, faces), (w - 0.45, w - 0.3, lv, lf), (-w + 0.3, -w + 0.45, lv, lf)]
+            if w >= 3.0 and s % 2 == 0:                      # a dashed centre line
+                strips.append((-0.07, 0.07, lv, lf))
+            for off0, off1, vs, fs in strips:
                 quad = [(p0[0] + nx * off0, p0[1] + ny * off0), (p1[0] + nx * off0, p1[1] + ny * off0),
                         (p1[0] + nx * off1, p1[1] + ny * off1), (p0[0] + nx * off1, p0[1] + ny * off1)]
                 xs = np.array([q[0] for q in quad])
