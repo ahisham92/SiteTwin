@@ -381,15 +381,30 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                         (far, lambda c: inner < math.hypot(c.x, c.y) <= outer)):
         for o in group:
             if group is near and existing is not None:
-                # what stands on the site today: kept apart in small pieces (about 6 m square),
+                # what stands on the site today: kept apart in 4 m square pieces,
                 # to be broken out one by one at the start of the film
                 bm = bmesh.new()
                 bm.from_mesh(o.data)
+                bmesh.ops.delete(bm, geom=[f for f in bm.faces if not inside(f)], context="FACES")
+                if not bm.faces:
+                    bm.free()
+                    continue_existing = False
+                else:
+                    continue_existing = True
+                    # cut on a square grid, so the site is broken out in square patches, not slivers
+                    step = 4.0
+                    for axis, lo, hi in (((1, 0, 0), kx0 - 30, kx1 + 30), ((0, 1, 0), ky0 - 30, ky1 + 30)):
+                        t = math.floor(lo / step) * step
+                        while t <= hi:
+                            geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
+                            bmesh.ops.bisect_plane(bm, geom=geom, dist=1e-4,
+                                                   plane_co=tuple(t * a for a in axis), plane_no=axis)
+                            t += step
+                    bm.faces.index_update()
                 cells: dict[tuple[int, int], list] = {}
-                for f in bm.faces:
-                    if inside(f):
-                        c = f.calc_center_median()
-                        cells.setdefault((int(c.x // 6), int(c.y // 6)), []).append(f.index)
+                for f in (bm.faces if continue_existing else []):
+                    c = f.calc_center_median()
+                    cells.setdefault((int(c.x // 4), int(c.y // 4)), []).append(f.index)
                 for cell, idx in cells.items():
                     piece = bm.copy()
                     piece.faces.index_update()
@@ -407,7 +422,8 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                     bpy.context.scene.collection.objects.link(ob)
                     _photo_material(ob)
                     existing.append(ob)
-                bm.free()
+                if continue_existing:
+                    bm.free()
             bm = bmesh.new()
             bm.from_mesh(o.data)
             gone = [f for f in bm.faces if not keep(f.calc_center_median()) or inside(f)]
