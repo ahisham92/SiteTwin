@@ -30,7 +30,7 @@ ORDER = [name for name, _ in PHASES] + ["Other"]
 #: "lift": precast or steel, lowered in by the crane. "fit": appears in place.
 ARRIVAL = {
     "Foundations": "grow", "Vertical structure": "grow", "Floors": "grow",
-    "Horizontal structure": "lift", "Stairs and ramps": "lift", "Roof": "lift",
+    "Horizontal structure": "grow", "Stairs and ramps": "lift", "Roof": "lift",
     "Envelope": "lift", "Railings and finishes": "fit", "Services": "fit", "Other": "fit",
 }
 
@@ -141,7 +141,13 @@ def plan(elements: list[Element], seconds: float = 90.0, fps: int = 30,
             row = int(math.floor(c[1] / band))
             return (round(float(e.lo[2]), 1), row, float(c[0]) if row % 2 == 0 else -float(c[0]))
         els = sorted(els, key=order_key)
-        each = max(4, min(int(fps * 0.8), (s1 - s0) // 2 or 4))
+        if arrival == "grow":
+            # cast in place by a few gangs: each element takes about three elements' share of the
+            # step (cage, forms, pour, strike), so two or three are on the go at once
+            cap = (s1 - s0) if len(els) == 1 else int((s1 - s0) * 0.7)
+            each = max(6, min(cap, int(round(3.0 * (s1 - s0) / max(1, len(els))))))
+        else:
+            each = max(4, min(int(fps * 0.8), (s1 - s0) // 2 or 4))
         if len(els) > 1:
             gap = max(0.0, (s1 - s0 - each) / (len(els) - 1))
         else:

@@ -298,14 +298,14 @@ def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, 
         if k:
             a = 2 * (k - 1)
             tf.append((a, a + 1, a + 3, a + 2))
-    _mesh("access_track", tv, tf, M.get("asphalt"))
+    _mesh("access_track", tv, tf, M.get("asphalt_road"))
     return {"gate": (gx, gy), "out": (nx, ny), "along": (tx, ty), "laydown": lay}
 
 
 def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                  keep_out: tuple[float, float, float, float],
                  access: tuple[tuple[float, float], tuple[float, float]] | None = None,
-                 existing: list | None = None) -> tuple[float, float] | None:
+                 existing: list | None = None, flat: float = 0.0) -> tuple[float, float] | None:
     """Google's photo-real surroundings: the detailed tiles round the site and the coarse ring out
     to the horizon, the site itself cut out (it is rebuilt by the sequence), and everything
     lowered so the ground round the site meets the site's level. The ground just outside the
@@ -363,7 +363,7 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
         w = 0.0
         if abs(z) < 4.0:                                    # ground, not roofs
             d = from_site(x, y)
-            w = 1.0 - smooth01(d / 12.0)
+            w = 1.0 - smooth01(max(0.0, d - flat) / 12.0)
         if access is not None:
             (gx, gy), (nx, ny) = access
             along = (x - gx) * nx + (y - gy) * ny
@@ -559,12 +559,7 @@ def rebuild_near(tiles: list, level: float, keep_out, feats: list) -> dict:
         bpy.context.scene.collection.objects.link(ob)
     bm.free()
     # the roads, laid on the smoothed ground (in scene heights; the tiles are lowered later)
-    for i, road in enumerate(out["roads"]):
-        v, f, lv, lf = NZ.road_quads(road, out["grid"], NZ.RADIUS, keep_out, lift=0.06 + 0.003 * (i % 5))
-        if f:
-            _mesh("near_road", [(x, y, z) for x, y, z in v], f, M.get("asphalt_road"))
-        if lf:
-            _mesh("near_road_lines", lv, lf, M.get("road_paint"))
+    # (OSM roads are not drawn over Google's: laid as strips they floated and looked false)
     return {"buildings": len(out["buildings"]), "roads": len(out["roads"])}
 
 
@@ -621,6 +616,33 @@ def _photo_material(o) -> None:
 def smooth01(t: float) -> float:
     t = min(1.0, max(0.0, t))
     return t * t * (3 - 2 * t)
+
+
+APRON = 9.0     # metres of clean paving round the site pad, where Google's mesh is worst
+
+
+def build_apron(site, pad_e: float) -> list:
+    """A clean paved ring round the site pad, with a kerb at its outer edge: the street the
+    hoarding fronts, in place of Google's smeared ground right round the site."""
+    x0, y0, x1, y1 = site
+    a = (x0 - pad_e, y0 - pad_e, x1 + pad_e, y1 + pad_e)
+    b = (a[0] - APRON, a[1] - APRON, a[2] + APRON, a[3] + APRON)
+    z = 0.0
+    v = [(a[0], a[1], z), (a[2], a[1], z), (a[2], a[3], z), (a[0], a[3], z),
+         (b[0], b[1], z), (b[2], b[1], z), (b[2], b[3], z), (b[0], b[3], z)]
+    f = [(4, 5, 1, 0), (5, 6, 2, 1), (6, 7, 3, 2), (7, 4, 0, 3)]
+    apron = _mesh("apron", v, f, M.get("asphalt_road"))
+    k, h = 0.3, 0.15
+    c = (b[0] + k, b[1] + k, b[2] - k, b[3] - k)
+    kv = []
+    for (X0, Y0, X1, Y1), zz in ((b, h), (c, h), (b, -0.2), (c, -0.2)):
+        kv += [(X0, Y0, zz), (X1, Y0, zz), (X1, Y1, zz), (X0, Y1, zz)]
+    kf = []
+    for i in range(4):
+        j = (i + 1) % 4
+        kf += [(i, j, 4 + j, 4 + i), (8 + i, 8 + j, j, i), (4 + i, 4 + j, 12 + j, 12 + i)]
+    kerb = _mesh("apron_kerb", kv, kf, M.get("concrete"))
+    return [apron, kerb]
 
 
 def build_base(g: Ground, z: float, horizon: float):
@@ -737,10 +759,7 @@ def build_model(elements: list[Element], tl: Timeline) -> dict[str, Any]:
         obj = _mesh("el_" + e.guid, e.verts - base, e.faces, M.for_element(e.kind))
         obj.location = tuple(map(float, base))
         if how == "grow":
-            obj.scale = (1, 1, 0.02)
-            obj.keyframe_insert("scale", frame=a)
-            obj.scale = (1, 1, 1)
-            obj.keyframe_insert("scale", frame=b)
+            a = _cast(e, obj, a, b, tl)
         elif how in ("lift", "crane"):
             pass                                  # carried in by the crane (build_plant keys it)
         else:
@@ -751,6 +770,132 @@ def build_model(elements: list[Element], tl: Timeline) -> dict[str, Any]:
         _visible(obj, a, None, tl.frames)
         objs[e.guid] = obj
     return objs
+
+
+def _box(name: str, lo, hi, material, cage: float = 0.0):
+    """A box from lo to hi; with ``cage`` > 0, a wire cage of bars that far apart."""
+    import bmesh
+    import bpy
+    (x0, y0, z0), (x1, y1, z1) = lo, hi
+    bm = bmesh.new()
+    if cage <= 0:
+        bmesh.ops.create_cube(bm, size=1.0)
+        for v in bm.verts:
+            v.co.x = x0 + (v.co.x + 0.5) * (x1 - x0)
+            v.co.y = y0 + (v.co.y + 0.5) * (y1 - y0)
+            v.co.z = z0 + (v.co.z + 0.5) * (z1 - z0)
+    else:                                                 # bars: verticals round the edge, links up it
+        r = 0.012
+        def bar(p, q):
+            ax = [i for i in range(3) if abs(q[i] - p[i]) > 1e-6][0]
+            lo_ = [min(p[i], q[i]) - (0 if i == ax else r) for i in range(3)]
+            hi_ = [max(p[i], q[i]) + (0 if i == ax else r) for i in range(3)]
+            res = bmesh.ops.create_cube(bm, size=1.0)
+            for v in res["verts"]:
+                for i in range(3):
+                    v.co[i] = lo_[i] + (v.co[i] + 0.5) * (hi_[i] - lo_[i])
+        nx = max(1, int((x1 - x0) / cage))
+        ny = max(1, int((y1 - y0) / cage))
+        for i in range(nx + 1):
+            for j in (0, ny):
+                x, y = x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny
+                bar((x, y, z0), (x, y, z1))
+        for j in range(1, ny):
+            for i in (0, nx):
+                x, y = x0 + (x1 - x0) * i / nx, y0 + (y1 - y0) * j / ny
+                bar((x, y, z0), (x, y, z1))
+        nz = max(1, int((z1 - z0) / 0.25))
+        for k in range(nz + 1):
+            z = z0 + (z1 - z0) * k / nz
+            bar((x0, y0, z), (x1, y0, z)); bar((x0, y1, z), (x1, y1, z))
+            bar((x0, y0, z), (x0, y1, z)); bar((x1, y0, z), (x1, y1, z))
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.append(material)
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    return ob
+
+
+def _cast(e: Element, obj, a: int, b: int, tl: Timeline) -> int:
+    """Cast in place as a site does it, between frames a and b. Columns and walls: the rebar
+    cage stands, the forms close round it, the concrete is poured, and the forms are struck.
+    Slabs and beams: props and deck go up, the rebar mat is laid, and the concrete is poured
+    across from one side; the props stay a while after. Returns the frame the concrete shows."""
+    lo = [float(v) for v in e.lo]
+    hi = [float(v) for v in e.hi]
+    dx, dy, dz = hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]
+    span = max(4, b - a)
+    t = lambda f: int(round(a + span * f))
+    flat = dz < 0.6 * max(dx, dy) and dz < 1.2
+    if not flat:
+        cage = _box("rebar_" + e.guid, (lo[0] + 0.04, lo[1] + 0.04, lo[2]), (hi[0] - 0.04, hi[1] - 0.04, hi[2] + 0.6),
+                    M.get("rebar"), cage=0.15) if max(dx, dy) < 2.5 else None
+        form = _box("form_" + e.guid, (lo[0] - 0.03, lo[1] - 0.03, lo[2]), (hi[0] + 0.03, hi[1] + 0.03, hi[2]),
+                    M.get("formwork"))
+        if cage is not None:
+            _visible(cage, a, t(0.45), tl.frames)
+        _visible(form, t(0.3), t(0.9), tl.frames)
+        obj.scale = (1, 1, 0.02)                         # poured inside the forms (unseen), struck at 0.9
+        obj.keyframe_insert("scale", frame=t(0.45))
+        obj.scale = (1, 1, 1)
+        obj.keyframe_insert("scale", frame=t(0.75))
+        return t(0.45)
+    # slabs and beams: props down to the floor below, the deck, the mat, the pour across
+    under = max(lo[2] - 3.4, -2.0)
+    props = None
+    if dx * dy > 1.0 and lo[2] - under > 0.5:
+        import bmesh
+        import bpy
+        bm = bmesh.new()
+        step = 1.5
+        for i in range(int(dx / step) + 1):
+            for j in range(int(dy / step) + 1):
+                x, y = lo[0] + 0.3 + i * step, lo[1] + 0.3 + j * step
+                if x > hi[0] - 0.2 or y > hi[1] - 0.2:
+                    continue
+                res = bmesh.ops.create_cube(bm, size=1.0)
+                for v in res["verts"]:
+                    v.co.x = x + v.co.x * 0.06
+                    v.co.y = y + v.co.y * 0.06
+                    v.co.z = under + (v.co.z + 0.5) * (lo[2] - 0.05 - under)
+        me = bpy.data.meshes.new("props_" + e.guid)
+        bm.to_mesh(me)
+        bm.free()
+        me.materials.append(M.get("steel"))
+        props = bpy.data.objects.new("props_" + e.guid, me)
+        bpy.context.scene.collection.objects.link(props)
+    deck = _box("deck_" + e.guid, (lo[0], lo[1], lo[2] - 0.05), (hi[0], hi[1], lo[2]), M.get("formwork"))
+    keep = min(tl.frames, b + int(tl.fps * 2.5))
+    if props is not None:
+        _visible(props, a, keep, tl.frames)
+    _visible(deck, t(0.12), keep, tl.frames)
+    import bmesh
+    import bpy
+    bm = bmesh.new()                                     # the rebar mat: a 0.2 m grid of bars
+    bmesh.ops.create_grid(bm, x_segments=max(2, int(dx / 0.2)), y_segments=max(2, int(dy / 0.2)), size=0.5)
+    for v in bm.verts:
+        v.co.x = (lo[0] + hi[0]) / 2 + v.co.x * (dx - 0.1)
+        v.co.y = (lo[1] + hi[1]) / 2 + v.co.y * (dy - 0.1)
+        v.co.z = lo[2] + 0.06
+    me = bpy.data.meshes.new("mat_" + e.guid)
+    bm.to_mesh(me)
+    bm.free()
+    me.materials.append(M.get("rebar"))
+    mat = bpy.data.objects.new("mat_" + e.guid, me)
+    bpy.context.scene.collection.objects.link(mat)
+    mat.modifiers.new("bars", "WIREFRAME").thickness = 0.016
+    _visible(mat, t(0.3), t(0.95), tl.frames)
+    # poured across from the low-x side: origin moved to that edge, then stretched out
+    shift = dx / 2
+    obj.data.transform(__import__("mathutils").Matrix.Translation((shift, 0, 0)))
+    obj.location = (obj.location[0] - shift, obj.location[1], obj.location[2])
+    obj.scale = (0.02, 1, 1)
+    obj.keyframe_insert("scale", frame=t(0.45))
+    obj.scale = (1, 1, 1)
+    obj.keyframe_insert("scale", frame=t(0.95))
+    return t(0.45)
 
 
 # ---- plant and people --------------------------------------------------------------------
@@ -1364,8 +1509,11 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     site_objs = [o for o in bpy.data.objects if o not in before]
     keep_out = (site[0] - 2, site[1] - 2, site[2] + 2, site[3] + 2)
     existing: list = []
+    pad_e = 2 * g.radius / (g.n - 1) + 4.0
     got = build_google(g, manifest, env_folder, keep_out, (pts["gate"], pts["out"]),
-                       existing if tl.clear_end > 0 else None) if has_google else None
+                       existing if tl.clear_end > 0 else None, flat=pad_e - 2.0 + APRON) if has_google else None
+    if got:
+        site_objs += build_apron(g.site, pad_e)
     google_level = got[0] if got else None
     if got:
         # Google's mesh is the ground: no terrain under it to poke through where it dips
@@ -1403,7 +1551,7 @@ def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[flo
     """The site as it is today, cleared piece by piece (nearest the gate first) while the
     excavator works, then the hoarding, cabins and laydown going up."""
     import bpy
-    ground = {"site_pad", "excavation", "site_walls"}
+    ground = {"site_pad", "excavation", "site_walls", "apron", "apron_kerb"}
     for o in site_objs:
         base = o.name.split(".")[0]
         if existing and base in ground:
