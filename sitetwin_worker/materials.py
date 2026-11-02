@@ -198,7 +198,7 @@ def get(name: str):
     m, bsdf, tree = _principled("st_" + name)
     if name == "concrete":
         # plain cast concrete: an even light grey with faint blotches, no pattern
-        _noise_mix(tree, bsdf, (0.50, 0.49, 0.46), (0.56, 0.55, 0.52), scale=0.6, detail=4, rough=(0.8, 0.92), bump=0.04)
+        _noise_mix(tree, bsdf, (0.38, 0.37, 0.35), (0.45, 0.44, 0.41), scale=0.6, detail=4, rough=(0.8, 0.92), bump=0.04)
     elif name == "concrete_fresh":
         _noise_mix(tree, bsdf, (0.36, 0.36, 0.35), (0.40, 0.40, 0.39), scale=0.8, detail=4, rough=(0.45, 0.7), bump=0.03)
     elif name == "steel":
