@@ -111,3 +111,4 @@ def test_cars_park_at_kerbs_clear_of_site():
         assert min(abs(y - 20), abs(y + 40)) > 1.5      # at the kerb, not in the middle
         assert math.hypot(max(-10 - x, x - 10, 0), max(-10 - y, y - 10, 0)) > 15
     assert life["moving"]
+    assert life["street_trees"]

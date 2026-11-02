@@ -1689,7 +1689,7 @@ CAR_SPEED = 9.0         # m/s of film time: town traffic
 def build_street(street: dict[str, Any], tl: Timeline, rng: random.Random) -> dict[str, int]:
     """Real trees where Google had tree blobs, cars parked at the kerbs and a few driving."""
     n = {"trees": 0, "parked": 0, "moving": 0}
-    for i, (x, y, z, h) in enumerate(street.get("trees", [])):
+    for i, (x, y, z, h) in enumerate(list(street.get("trees", [])) + list(street.get("street_trees", []))):
         palm = rng.random() < 0.35
         o = E.prop("prop_palm") if palm else E.variant("prop_tree", rng.randrange(1000))
         if o is None:

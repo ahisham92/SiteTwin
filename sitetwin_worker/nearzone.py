@@ -269,7 +269,7 @@ def find_trees(xy: np.ndarray, z: np.ndarray, ground: np.ndarray, colour: np.nda
         cells.setdefault((int(px), int(py)), []).append(int(i))
     out = []
     for pts in cells.values():
-        if len(pts) < 3:
+        if len(pts) < 2:
             continue
         p = np.array(pts)
         out.append({"x": float(xy[p, 0].mean()), "y": float(xy[p, 1].mean()),
@@ -288,7 +288,8 @@ def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0
                 max_moving: int = 6) -> dict[str, list]:
     """Cars along the streets round the site: parked ones at the kerbs (with gaps, never on a
     building or by the site), and a few driving on the right. Returns {"parked": [(x, y, z,
-    heading)], "moving": [[(x, y, z), ...] path, ...]}, in the ground grid's heights.
+    heading)], "moving": [[(x, y, z), ...] path, ...], "street_trees": [(x, y, z, height)]}, in
+    the ground grid's heights.
     ``clear``: metres round the site (its graded ring) kept free."""
     import random
     rng = random.Random(seed)
@@ -334,6 +335,31 @@ def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0
     rng.shuffle(parked)
     parked = parked[:max_parked]
 
+    # street trees and palms on the pavements, every 12 to 30 m, where nothing stands
+    trees = []
+    for r in roads:
+        if r.get("class") not in PARKING:
+            continue
+        w = r["width"] / 2
+        pts = r["points"]
+        for a, b in zip(pts[:-1], pts[1:]):
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            L = math.hypot(dx, dy)
+            if L < 10:
+                continue
+            ux, uy = dx / L, dy / L
+            for side in (1, -1):
+                t = rng.uniform(4.0, 14.0)
+                while t < L - 4.0:
+                    x = a[0] + ux * t - uy * side * (w + 1.4)
+                    y = a[1] + uy * t + ux * side * (w + 1.4)
+                    corner = any(math.hypot(x - ex, y - ey) < 10 for ex, ey in ends)
+                    if not corner and free(x, y) and rng.random() < 0.55:
+                        zz = float(sample(g, origin, cell, np.array([x]), np.array([y]))[0])
+                        trees.append((x, y, zz, rng.uniform(5.0, 9.0)))
+                    t += rng.uniform(12.0, 30.0)
+    rng.shuffle(trees)
+
     moving = []
     lanes = sorted((r for r in roads if r.get("class") in DRIVING),
                    key=lambda r: -sum(math.dist(a, b) for a, b in zip(r["points"][:-1], r["points"][1:])))
@@ -362,4 +388,4 @@ def street_life(roads: list, buildings: list, grid, keep_out, clear: float = 0.0
         if len(path) >= 2:
             moving.append(path)
     moving = [p for p in moving if sum(math.dist(a[:2], b[:2]) for a, b in zip(p[:-1], p[1:])) > 30]
-    return {"parked": parked, "moving": moving[:max_moving]}
+    return {"parked": parked, "moving": moving[:max_moving], "street_trees": trees[:80]}
