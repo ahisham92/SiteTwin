@@ -118,11 +118,13 @@ def _load(kind: str, path: Path, height: float, yaw: float, length: float | None
     return meshes
 
 
-def _split(meshes: list, cells: int = 300) -> list[list]:
+def _split(meshes: list, cells: int = 300, trunks: bool = False) -> list[list]:
     """Cut a pack (several models side by side, often in one mesh) into its separate models.
     Every face is drawn on a plan grid ``cells`` across; touching patches of the grid are one
     model (a car's wheels lie under its body, a tree's leaves over its trunk). A face spanning
-    much of the pack (a ground plane under them all) is dropped."""
+    much of the pack (a ground plane under them all) is dropped. With ``trunks`` (trees whose
+    crowns overlap), only the lowest fifth is drawn on the grid, one patch per trunk, and every
+    other face goes to the trunk nearest in plan."""
     import bmesh
     import numpy as np
     per = []
@@ -138,11 +140,18 @@ def _split(meshes: list, cells: int = 300) -> list[list]:
     nx, ny = (int((hi - lo)[0] / cell) + 3, int((hi - lo)[1] / cell) + 3)
     occ = np.zeros((nx, ny), bool)
     faces = []                                        # (mesh index, face index, cell) per face
+    zs = [np.array([v.co.z for v in d.vertices]) for d in meshes]
+    zall = np.concatenate(zs) if zs else np.zeros(1)
+    low = float(zall.min() + 0.2 * (zall.max() - zall.min()))
+    upper = []                                        # faces left for the nearest trunk
     for mi, (d, xy) in enumerate(zip(meshes, per)):
         for poly in d.polygons:
             vs = xy[list(poly.vertices)]
             span = vs.max(axis=0) - vs.min(axis=0)
             if max(span) > 0.4 * ext:
+                continue
+            if trunks and float(zs[mi][list(poly.vertices)].mean()) > low:
+                upper.append((mi, poly.index, vs.mean(axis=0)))
                 continue
             ij = ((vs - lo) / cell).astype(int) + 1
             i0, j0 = ij.min(axis=0)
@@ -169,6 +178,11 @@ def _split(meshes: list, cells: int = 300) -> list[list]:
     keep: dict[int, dict[int, set]] = {}
     for mi, fi, (i, j) in faces:
         keep.setdefault(int(label[i, j]), {}).setdefault(mi, set()).add(fi)
+    if upper and n_lab:
+        centre = np.array([np.argwhere(label == k).mean(axis=0) for k in range(n_lab)]) * cell + lo - cell
+        for mi, fi, c in upper:
+            k = int(np.argmin(((centre - c) ** 2).sum(axis=1)))
+            keep.setdefault(k, {}).setdefault(mi, set()).add(fi)
     sizes = {k: sum(len(v) for v in m.values()) for k, m in keep.items()}
     big = max(sizes.values()) if sizes else 0
     out = []
@@ -195,7 +209,7 @@ def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float |
     import mathutils
     meshes = _load(kind, path, 0.0, yaw, None)                # as modelled, rotated
     out = []
-    for group in _split(meshes):
+    for group in _split(meshes, trunks=not length):
         lo = [min(v.co[i] for d in group for v in d.vertices) for i in range(3)]
         hi = [max(v.co[i] for d in group for v in d.vertices) for i in range(3)]
         size = max(hi[0] - lo[0], hi[1] - lo[1])
