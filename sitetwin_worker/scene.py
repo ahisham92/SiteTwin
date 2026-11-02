@@ -351,6 +351,12 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
     # The ground level around the site: low points in a ring 8 to 45 m outside it.
     ring = [v.co.z for o in near for v in o.data.vertices if 8.0 <= from_site(v.co.x, v.co.y) <= 45.0]
     level = float(np.percentile(ring, 12)) if ring else 0.0
+    if manifest.get("osm"):
+        try:
+            feats = json.loads((folder / manifest["osm"]["file"]).read_text())
+            rebuild_near(near, level, keep_out, feats)
+        except Exception as exc:                            # noqa: BLE001 - Google's own look stands
+            print(f"  near streets not rebuilt: {type(exc).__name__}: {exc}")
 
     def graded(x: float, y: float, z: float) -> float:
         """z (already lowered) with the grading round the site and along the access road."""
@@ -482,6 +488,118 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
             kept.append(o)
         finer = finer + kept
     return level, (lowest if lowest < math.inf else 0.0)
+
+
+def rebuild_near(tiles: list, level: float, keep_out, feats: list) -> dict:
+    """The streets round the site rebuilt clean (see nearzone.py): Google's surface is reshaped
+    in place, and the buildings and roads are added. Works in the tiles' own (raw) heights."""
+    import bmesh
+    import bpy
+    from . import nearzone as NZ
+    shift = level + 0.05
+    parts, cols, steeps = [], [], []
+    for o in tiles:
+        me = o.data
+        n = len(me.vertices)
+        co = np.empty(n * 3)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(n, 3)
+        nor = np.empty(n * 3)
+        me.vertices.foreach_get("normal", nor)
+        nor = nor.reshape(n, 3)
+        parts.append(co)
+        steeps.append(np.abs(nor[:, 2]) < 0.5)
+        cols.append(_vertex_photo_colours(o, n))
+    xyz = np.concatenate(parts)
+    xyz[:, 2] -= shift
+    out = NZ.plan(xyz, np.concatenate(cols), np.concatenate(steeps), feats, keep_out)
+    k = 0
+    for o, co in zip(tiles, parts):
+        n = len(co)
+        co[:, 2] = out["z"][k:k + n] + shift
+        o.data.vertices.foreach_set("co", co.ravel())
+        o.data.update()
+        k += n
+    # the buildings: one mesh, each face carrying its building's colours and ground level
+    bm = bmesh.new()
+    wall_l = bm.faces.layers.float_color.new("wall")
+    roof_l = bm.faces.layers.float_color.new("roof")
+    base_l = bm.faces.layers.float.new("base")
+    top_l = bm.faces.layers.float.new("top")
+    for b in out["buildings"]:
+        ring = b["points"]
+        area = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]))
+        if area < 0:
+            ring = ring[::-1]
+        lo, hi = b["base"] - 0.4, b["top"]
+        bot = [bm.verts.new((x, y, lo)) for x, y in ring]
+        rim = [bm.verts.new((x, y, hi + 0.9)) for x, y in ring]      # a parapet round the roof
+        top = [bm.verts.new((x, y, hi)) for x, y in ring]
+        faces = []
+        m = len(ring)
+        for i in range(m):
+            try:
+                faces.append(bm.faces.new((bot[i], bot[(i + 1) % m], rim[(i + 1) % m], rim[i])))
+            except ValueError:
+                pass
+        try:
+            faces.append(bm.faces.new(top))
+        except ValueError:
+            pass
+        for f in faces:
+            f[wall_l] = (*b["wall"], 1.0)
+            f[roof_l] = (*b["roof"], 1.0)
+            f[base_l] = b["base"]
+            f[top_l] = hi
+    if out["buildings"]:
+        me = bpy.data.meshes.new("near_buildings")
+        bm.to_mesh(me)
+        me.materials.append(M.get("facade_real"))
+        ob = bpy.data.objects.new("near_buildings", me)
+        bpy.context.scene.collection.objects.link(ob)
+    bm.free()
+    # the roads, laid on the smoothed ground (in scene heights; the tiles are lowered later)
+    for i, road in enumerate(out["roads"]):
+        v, f, lv, lf = NZ.road_quads(road, out["grid"], NZ.RADIUS, keep_out, lift=0.06 + 0.003 * (i % 5))
+        if f:
+            _mesh("near_road", [(x, y, z) for x, y, z in v], f, M.get("asphalt_road"))
+        if lf:
+            _mesh("near_road_lines", lv, lf, M.get("road_paint"))
+    return {"buildings": len(out["buildings"]), "roads": len(out["roads"])}
+
+
+def _vertex_photo_colours(o, n: int) -> np.ndarray:
+    """Each vertex's colour in the tile's photo (linear RGB), grey where there is none."""
+    out = np.full((n, 3), 0.4)
+    me = o.data
+    if not me.uv_layers or not me.materials:
+        return out
+    img = None
+    for mat in me.materials:
+        if mat and mat.use_nodes:
+            img = next((nd.image for nd in mat.node_tree.nodes if nd.type == "TEX_IMAGE" and nd.image), None)
+            if img:
+                break
+    if img is None or not img.size[0]:
+        return out
+    w, h = img.size
+    px = np.empty(w * h * 4, np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)[:, :, :3]
+    nl = len(me.loops)
+    vi = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", vi)
+    uv = np.empty(nl * 2)
+    me.uv_layers.active.data.foreach_get("uv", uv)
+    uv = uv.reshape(nl, 2)
+    per = np.zeros((n, 2))
+    per[vi] = uv
+    x = np.clip((per[:, 0] % 1.0) * (w - 1), 0, w - 1).astype(int)
+    y = np.clip((per[:, 1] % 1.0) * (h - 1), 0, h - 1).astype(int)
+    c = px[y, x]
+    if img.colorspace_settings.name == "sRGB" and not img.is_float:
+        c = np.power(np.clip(c, 0, 1), 2.2)
+    return c.astype(float)
 
 
 def _photo_material(o) -> None:

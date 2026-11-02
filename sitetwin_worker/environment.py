@@ -208,7 +208,9 @@ def features_from_osm(data: dict[str, Any], local: Local) -> list[dict[str, Any]
             elif "highway" in tags and tags["highway"] in ROAD_WIDTH:
                 f = {"kind": "road", "width": float(tags.get("width", ROAD_WIDTH[tags["highway"]]) or 6)
                      if str(tags.get("width", "")).replace(".", "").isdigit() else ROAD_WIDTH[tags["highway"]],
-                     "class": tags["highway"]}
+                     "class": tags["highway"],
+                     "raised": tags.get("bridge", "no") != "no" or tags.get("tunnel", "no") != "no"
+                     or str(tags.get("layer", "0")) not in ("0", "")}
             elif tags.get("railway") == "rail":
                 f = {"kind": "rail", "width": 3.0}
             elif (tags.get("natural") == "water" or "waterway" in tags) and closed:
