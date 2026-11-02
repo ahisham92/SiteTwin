@@ -119,7 +119,7 @@ def fetch_one(kind: str, entry: dict[str, Any], token: str, cache: Path, get: Ge
 
 
 #: Ground and concrete textures (CC0, Poly Haven, no token needed): role -> asset name.
-TEXTURES = {"gravel": "gravelly_sand", "soil": "brown_mud_dry", "concrete": "concrete_wall_003",
+TEXTURES = {"gravel": "gravelly_sand", "soil": "brown_mud_dry",
             "asphalt": "asphalt_02", "formwork": "weathered_brown_planks"}
 POLYHAVEN = "https://api.polyhaven.com/files/{name}"
 
