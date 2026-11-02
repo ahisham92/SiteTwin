@@ -7,6 +7,8 @@ KINDS = {
     "flatbed_truck": ["flatbed lorry", "volvo truck", "scania truck", "mercedes actros", "man tgs truck", "dump truck", "semi truck trailer"],
     "mixer_truck": ["cement mixer truck", "transit mixer"],
 }
+if len(sys.argv) > 1 and sys.argv[1].strip():
+    KINDS = json.loads(sys.argv[1])
 for kind, queries in KINDS.items():
     seen, rows = set(), []
     for q in queries:
@@ -27,5 +29,5 @@ for kind, queries in KINDS.items():
                          (m.get("user") or {}).get("username"), m.get("animationCount", 0)))
     rows.sort(reverse=True)
     print(f"\n== {kind}")
-    for r in rows[:12]:
+    for r in rows[:10]:
         print(f"  {r[0]:>5} likes  {r[1]}  {r[2]:<50} {r[3]:<22} faces {r[4]}  by {r[5]}  anims {r[6]}")
