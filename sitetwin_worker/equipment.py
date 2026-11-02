@@ -208,6 +208,10 @@ def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float |
     sized on its own, as ``_load`` does for a single model. Returns a list of mesh lists."""
     import mathutils
     meshes = _load(kind, path, 0.0, yaw, None)                # as modelled, rotated
+    if length:                                                # cars: the street's own muted paint
+        for d in meshes:
+            for mat in d.materials:
+                _mute(mat)
     out = []
     for group in _split(meshes, trunks=not length):
         lo = [min(v.co[i] for d in group for v in d.vertices) for i in range(3)]
@@ -227,6 +231,26 @@ def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float |
             copies.append(c)
         out.append(copies)
     return out
+
+
+def _mute(mat, keep: float = 0.35) -> None:
+    """Take most of the colour out of a material's base colour (toy-bright paint to the greys,
+    whites and dull blues of real traffic)."""
+    if mat is None or not mat.use_nodes or mat.get("muted"):
+        return
+    mat["muted"] = True
+    nt = mat.node_tree
+    for node in [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"]:
+        base = node.inputs["Base Color"]
+        if base.links:
+            hsv = nt.nodes.new("ShaderNodeHueSaturation")
+            hsv.inputs["Saturation"].default_value = keep
+            nt.links.new(base.links[0].from_socket, hsv.inputs["Color"])
+            nt.links.new(hsv.outputs["Color"], base)
+        else:
+            r, g, b, a = base.default_value
+            m = (r + g + b) / 3
+            base.default_value = (m + (r - m) * keep, m + (g - m) * keep, m + (b - m) * keep, a)
 
 
 def variant(kind: str, n: int):
