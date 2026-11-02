@@ -54,8 +54,16 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str], start: d
     for st in tl.steps:
         if st.start <= frame < st.end:
             step = st
-    if frame < tl.build_start:
-        line = "The site, cleared and set out"
+    fly_end = getattr(tl, "fly_end", 0)
+    clear_start, clear_end = getattr(tl, "clear_start", 0), getattr(tl, "clear_end", 0)
+    if frame < fly_end:
+        line = "Flying in to the site"
+    elif clear_end and frame < clear_start:
+        line = "The site as it is today"
+    elif clear_end and frame < clear_end:
+        line = "Clearing the site"
+    elif frame < tl.build_start:
+        line = "Setting up: hoarding, cabins and the tower crane" if clear_end else "The site, cleared and set out"
     elif frame >= tl.build_end:
         line = "Complete"
     elif step is not None:

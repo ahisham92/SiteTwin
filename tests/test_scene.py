@@ -29,7 +29,7 @@ def test_the_scene_has_the_building_the_site_and_the_plant(tmp_path):
          "points": [[60, 60], [80, 60], [80, 75], [60, 75], [60, 60]]},
         {"kind": "road", "id": 2, "width": 8.0, "class": "primary", "points": [[-150, -60], [150, -60]]}]))
     els = model.load(ifc)
-    tl = sequence.plan(els, seconds=10, fps=10)
+    tl = sequence.plan(els, seconds=20, fps=10)
     info = scene.build(els, tl, env, manifest, scene.Options(width=64, height=36, samples=1, fps=10), tmp_path)
     names = {o.name.split(".")[0] for o in bpy.data.objects}
     assert {"terrain", "site_pad", "excavation", "hoarding", "neighbours", "osm_asphalt", "camera",

@@ -75,6 +75,12 @@ class Timeline:
     build_end: int
     steps: list[Step]
     appear: dict[str, tuple[int, int, str]]     # guid -> (start, end, arrival)
+    #: The opening: the camera flies down from space until ``fly_end``; the site is seen as it
+    #: is, then cleared (demolition or stripping) from ``clear_start`` to ``clear_end``; the
+    #: hoarding, cabins and crane go up after that, before ``build_start``.
+    fly_end: int = 0
+    clear_start: int = 0
+    clear_end: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {"fps": self.fps, "frames": self.frames, "build_start": self.build_start,
@@ -90,9 +96,19 @@ def phase_of(e: Element) -> str:
 
 
 def plan(elements: list[Element], seconds: float = 90.0, fps: int = 30,
-         intro: float = 0.08, outro: float = 0.12) -> Timeline:
+         intro: float = 0.08, outro: float = 0.12, opening: bool = True) -> Timeline:
+    """``opening``: begin with the flight down from space and the clearing of the site as it is
+    (about a quarter of the film, never more than 20 s), before the hoarding goes up."""
     frames = int(round(seconds * fps))
-    build_start = int(frames * intro)
+    fly_end = clear_start = clear_end = 0
+    if opening:
+        lead = min(20.0, seconds * 0.24)
+        fly_end = int(fps * lead * 0.45)
+        clear_start = fly_end + int(fps * lead * 0.12)
+        clear_end = clear_start + int(fps * lead * 0.33)
+        build_start = clear_end + int(fps * lead * 0.10)
+    else:
+        build_start = int(frames * intro)
     build_end = int(frames * (1 - outro))
 
     # Storeys by elevation; elements with no storey go by their own height.
@@ -139,7 +155,7 @@ def plan(elements: list[Element], seconds: float = 90.0, fps: int = 30,
                           centre=(float(c[0]), float(c[1]), float(c[2])), top=float(hi[2]),
                           plant=list(PLANT[phase]), crew=CREW[phase]))
     return Timeline(fps=fps, frames=frames, build_start=build_start, build_end=build_end,
-                    steps=steps, appear=appear)
+                    steps=steps, appear=appear, fly_end=fly_end, clear_start=clear_start, clear_end=clear_end)
 
 
 def plant_windows(tl: Timeline) -> dict[str, list[tuple[int, int]]]:
@@ -156,6 +172,9 @@ def plant_windows(tl: Timeline) -> dict[str, list[tuple[int, int]]]:
     if "tower_crane" in out:
         spans = out["tower_crane"]
         out["tower_crane"] = [(spans[0][0], spans[-1][1])]
+    if tl.clear_end > tl.clear_start:
+        # clearing the site: an excavator breaks out what stands there
+        out.setdefault("excavator", []).insert(0, (tl.clear_start, tl.clear_end))
     return out
 
 
@@ -166,12 +185,17 @@ WORK_DAYS = {"Foundations": 40, "Vertical structure": 12, "Horizontal structure"
              "Services": 15, "Other": 5}
 #: Setting up the site before the first step: hoarding, cabins, crane.
 SETUP_DAYS = 15
+#: Clearing the site as it was (demolition, breaking out, stripping) before the setup.
+CLEAR_DAYS = 25
 
 
 def calendar(tl: Timeline) -> list[tuple[int, float]]:
     """(frame, calendar day) pairs through the film: day 0 when the site is handed over, the
     setup before the first step, then each step's working days (5 working days a week)."""
-    pts = [(0, 0.0), (tl.build_start, SETUP_DAYS * 7 / 5)]
+    pts = [(0, 0.0)]
+    if tl.clear_end > tl.clear_start:
+        pts += [(tl.clear_start, 0.0), (tl.clear_end, CLEAR_DAYS * 7 / 5)]
+    pts.append((max(tl.build_start, pts[-1][0] + 1), pts[-1][1] + SETUP_DAYS * 7 / 5))
     day = pts[-1][1]
     for st in tl.steps:
         if st.start > pts[-1][0]:

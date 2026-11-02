@@ -35,6 +35,14 @@ MAX_TILES = 700
 HORIZON = 2500.0
 #: The most tiles of that ring.
 MAX_FAR_TILES = 500
+#: The opening flight from space: the Earth, the region and the city around the site, each
+#: as coarse as it can be for the height it is seen from. (name, radius, error wanted at a
+#: distance, most tiles)
+INTRO_LAYERS = (
+    ("globe", 7.0e6, lambda d: max(1.5e5, d * 0.06), 160),
+    ("region", 6.0e4, lambda d: max(800.0, d * 0.04), 160),
+    ("city", 9.0e3, lambda d: max(40.0, d * 0.02), 220),
+)
 
 A = 6378137.0
 F = 1 / 298.257223563
@@ -138,7 +146,8 @@ def _absolute(uri: str, base: str, key: str, session: str | None) -> str:
 
 
 def select(root_url: str, key: str, lat: float, lon: float, radius: float, fetch: Fetch,
-           max_tiles: int = MAX_TILES, coarse: bool = False) -> tuple[list[tuple[str, np.ndarray]], float]:
+           max_tiles: int = MAX_TILES, coarse: bool = False,
+           error_at: Callable[[float], float] | None = None) -> tuple[list[tuple[str, np.ndarray]], float]:
     """The glTF tiles to draw the circle around the site with: [(url, tile transform)], and the
     finest geometric error found at the site itself. ``coarse`` asks for the far ring's level of
     detail (the horizon), a few metres of error close in and tens of metres far out."""
@@ -148,6 +157,8 @@ def select(root_url: str, key: str, lat: float, lon: float, radius: float, fetch
     session: list[str | None] = [None]
 
     def wanted_error(dist: float) -> float:
+        if error_at is not None:
+            return error_at(dist)
         if coarse:
             return max(8.0, dist * 0.03)
         # finest at the site, coarser with distance: about 1 cm of error per metre away
@@ -246,7 +257,7 @@ def to_local(data: bytes, tile_transform: np.ndarray, local: np.ndarray) -> tupl
 
 
 def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
-           key: str | None = None, horizon: float = HORIZON) -> dict[str, Any]:
+           key: str | None = None, horizon: float = HORIZON, intro: bool = True) -> dict[str, Any]:
     """Download the tiles into ``folder``: the detailed circle, and a coarse ring out to
     ``horizon`` so the skyline is real. Returns the manifest's "google" entry, or raises
     LookupError when Google has no detailed 3D here (the caller falls back)."""
@@ -271,6 +282,7 @@ def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
         raise LookupError(f"Google has no detailed 3D here (finest tile {best:.0f} m)")
     local = enu_matrix(lat, lon)
     files, far_files, credits = [], [], set()
+    intro_files: dict[str, list[str]] = {}
 
     def one(job: tuple[str, tuple[str, np.ndarray]]) -> tuple[str, str] | None:
         name, (url, transform) = job
@@ -281,19 +293,33 @@ def gather(lat: float, lon: float, radius: float, folder: Path, fetch: Fetch,
         (folder / name).write_bytes(glb)
         return name, credit
 
+    layers: dict[str, list[tuple[str, np.ndarray]]] = {}
+    if intro:
+        for name, rad, err, most in INTRO_LAYERS:
+            try:
+                layers[name], _ = select(ROOT, key, lat, lon, rad, fetch, max_tiles=most, error_at=err)
+            except Exception:                            # noqa: BLE001 - the opening is a bonus
+                layers[name] = []
     jobs = [(f"tile_{n:04d}.glb", t) for n, t in enumerate(tiles)] + \
-           [(f"far_{n:04d}.glb", t) for n, t in enumerate(far)]
+           [(f"far_{n:04d}.glb", t) for n, t in enumerate(far)] + \
+           [(f"{name}_{n:04d}.glb", t) for name, ts in layers.items() for n, t in enumerate(ts)]
     from concurrent.futures import ThreadPoolExecutor
     with ThreadPoolExecutor(16) as pool:
         for got in pool.map(one, jobs):
             if got is None:
                 continue
-            (far_files if got[0].startswith("far_") else files).append(got[0])
+            name = got[0].split("_")[0]
+            if name == "tile":
+                files.append(got[0])
+            elif name == "far":
+                far_files.append(got[0])
+            else:
+                intro_files.setdefault(name, []).append(got[0])
             for c in got[1].split(";"):
                 if c.strip() and c.strip() != "Google":
                     credits.add(c.strip())
     if not files:
         raise LookupError("none of Google's tiles could be downloaded")
-    return {"folder": folder.name, "files": files, "far_files": far_files, "radius": radius,
+    return {"folder": folder.name, "files": files, "far_files": far_files, "intro": intro_files, "radius": radius,
             "horizon": horizon if far_files else radius, "finest": best,
             "credit": "Google" + (" · " + "; ".join(sorted(credits)) if credits else "")}

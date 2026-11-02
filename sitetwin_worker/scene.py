@@ -304,7 +304,8 @@ def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, 
 
 def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                  keep_out: tuple[float, float, float, float],
-                 access: tuple[tuple[float, float], tuple[float, float]] | None = None) -> tuple[float, float] | None:
+                 access: tuple[tuple[float, float], tuple[float, float]] | None = None,
+                 existing: list | None = None) -> tuple[float, float] | None:
     """Google's photo-real surroundings: the detailed tiles round the site and the coarse ring out
     to the horizon, the site itself cut out (it is rebuilt by the sequence), and everything
     lowered so the ground round the site meets the site's level. The ground just outside the
@@ -370,14 +371,35 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
     inner = float(info.get("radius", g.radius))
     outer = float(info.get("horizon", inner))
     lowest = math.inf
+    def inside(f) -> bool:
+        c = f.calc_center_median()
+        return (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1) or any(
+            kx0 <= v.co.x <= kx1 and ky0 <= v.co.y <= ky1 for v in f.verts)
+
     for group, keep in ((near, lambda c: math.hypot(c.x, c.y) <= inner),
                         (far, lambda c: inner < math.hypot(c.x, c.y) <= outer)):
         for o in group:
+            if group is near and existing is not None:
+                # what stands on the site today: kept apart, to be cleared at the start of the film
+                bm = bmesh.new()
+                bm.from_mesh(o.data)
+                gone = [f for f in bm.faces if not inside(f)]
+                if len(gone) < len(bm.faces):
+                    bmesh.ops.delete(bm, geom=gone, context="FACES")
+                    for v in bm.verts:            # its ground sits a hair over the new pad, never under
+                        v.co.z = max(v.co.z - level - 0.05, 0.1)
+                    data = bpy.data.meshes.new("existing")
+                    bm.to_mesh(data)
+                    for mat in o.data.materials:
+                        data.materials.append(mat)
+                    ob = bpy.data.objects.new("existing_site", data)
+                    bpy.context.scene.collection.objects.link(ob)
+                    _photo_material(ob)
+                    existing.append(ob)
+                bm.free()
             bm = bmesh.new()
             bm.from_mesh(o.data)
-            gone = [f for f in bm.faces
-                    if not keep(c := f.calc_center_median()) or (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1)
-                    or any(kx0 <= v.co.x <= kx1 and ky0 <= v.co.y <= ky1 for v in f.verts)]
+            gone = [f for f in bm.faces if not keep(f.calc_center_median()) or inside(f)]
             bmesh.ops.delete(bm, geom=gone, context="FACES")
             for v in bm.verts:
                 x, y, z = v.co
@@ -386,20 +408,38 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
             bm.to_mesh(o.data)
             bm.free()
             o.name = "google_" + o.name
-            # photogrammetry carries its own daylight: no shine, a little of its colour as light
-            for slot in o.material_slots:
-                mat = slot.material
-                if mat and mat.use_nodes:
-                    for node in mat.node_tree.nodes:
-                        if node.type == "BSDF_PRINCIPLED":
-                            node.inputs["Roughness"].default_value = 1.0
-                            if "Specular IOR Level" in node.inputs:
-                                node.inputs["Specular IOR Level"].default_value = 0.1
-                            base = node.inputs["Base Color"]
-                            if base.links and "Emission Color" in node.inputs:
-                                mat.node_tree.links.new(base.links[0].from_socket, node.inputs["Emission Color"])
-                                node.inputs["Emission Strength"].default_value = 0.12
+            _photo_material(o)
+    # the opening flight's Earth, region and city: each kept only beyond the finer one inside it
+    rings = [("city", outer), ("region", 9.0e3), ("globe", 6.0e4)]
+    for name, cut in rings:
+        objs = load(info.get("intro", {}).get(name, []))
+        for o in objs:
+            bm = bmesh.new()
+            bm.from_mesh(o.data)
+            gone = [f for f in bm.faces if math.hypot(*f.calc_center_median()[:2]) < cut * 0.98]
+            bmesh.ops.delete(bm, geom=gone, context="FACES")
+            bmesh.ops.translate(bm, verts=bm.verts, vec=(0.0, 0.0, -level - 0.05))
+            bm.to_mesh(o.data)
+            bm.free()
+            o.name = f"google_{name}"
+            _photo_material(o)
     return level, (lowest if lowest < math.inf else 0.0)
+
+
+def _photo_material(o) -> None:
+    """Photogrammetry carries its own daylight: no shine, and a little of its colour as light."""
+    for slot in o.material_slots:
+        mat = slot.material
+        if mat and mat.use_nodes:
+            for node in mat.node_tree.nodes:
+                if node.type == "BSDF_PRINCIPLED":
+                    node.inputs["Roughness"].default_value = 1.0
+                    if "Specular IOR Level" in node.inputs:
+                        node.inputs["Specular IOR Level"].default_value = 0.1
+                    base = node.inputs["Base Color"]
+                    if base.links and "Emission Color" in node.inputs:
+                        mat.node_tree.links.new(base.links[0].from_socket, node.inputs["Emission Color"])
+                        node.inputs["Emission Strength"].default_value = 0.12
 
 
 def smooth01(t: float) -> float:
@@ -675,15 +715,17 @@ def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict
         keys = [(s, *keys[0][1:])] + [k for k in keys if k[0] > s] + [(e, *keys[-1][1:])]
         _apply_keys(rig, keys)
         machines.append(L.Machine("piling_rig", _half_length(rig) + 0.5, keys))
-    if "excavator" in windows:
-        s, e = windows["excavator"][0]
+    for s, e in windows.get("excavator", []):
+        # clearing the site (on the ground, before the setup) or digging the pit
+        clearing = getattr(tl, "clear_end", 0) > 0 and s < tl.clear_end
+        z = 0.02 if clearing else -pit_depth
         ex = E.excavator()
         _visible(ex, s, e, tl.frames)
         n = 5
         pts_ = [(x0 + 4 + (x1 - x0 - 8) * rng.random(), y0 + 4 + (y1 - y0 - 8) * rng.random()) for _ in range(n)]
         stops = L.nearest_order(pts_, (x0 + 4, y0 + 4))
         times = [int(s + (e - s) * k / max(1, n - 1)) for k in range(n)]
-        keys = L.drive(stops, times, -pit_depth)
+        keys = L.drive(stops, times, z)
         _apply_keys(ex, keys)
         machines.append(L.Machine("excavator", _half_length(ex) + 0.5, keys))
 
@@ -843,6 +885,7 @@ def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: ra
         w.rotation_euler = (0, 0, math.atan2(gy - q[1], gx - q[0]) if k == 2 else math.atan2(lay[1] - q[1], lay[0] - q[0]))
         fixed.append(w)
     plan["people"] = people + fixed
+    plan["fixed_people"] = fixed
 
 
 def check_clearance(people: list, machines: list, frames: int, step: int = 2, fix: bool = True) -> int:
@@ -1019,7 +1062,9 @@ def build_camera(fp, top: float, tl: Timeline, opts: Options, gate_dir: tuple[fl
     rig.keyframe_insert("rotation_euler", frame=tl.frames)
     # closer in for the build, out again for the finished building
     cam.location = (radius * 1.15, 0, radius * 0.7)
-    cam.keyframe_insert("location", frame=0)
+    cam.keyframe_insert("location", frame=tl.fly_end)
+    if tl.fly_end > 0:
+        _fly_down(cam, cam_data, (radius * 1.15, 0, radius * 0.7), tl.fly_end)
     cam.location = (radius, 0, radius * 0.5)
     cam.keyframe_insert("location", frame=tl.build_start + (tl.build_end - tl.build_start) // 3)
     cam.location = (radius * 0.95, 0, radius * 0.42)
@@ -1040,6 +1085,31 @@ def build_camera(fp, top: float, tl: Timeline, opts: Options, gate_dir: tuple[fl
             for kp in fc.keyframe_points:
                 kp.interpolation = "LINEAR"
     return cam
+
+
+def _fly_down(cam, cam_data, end: tuple[float, float, float], frames: int,
+              start_height: float = 1.8e7) -> None:
+    """From space to the site: the camera falls along a steepening-to-oblique line, its height
+    shrinking evenly in log terms (as in a globe viewer), looking at the site all the way.
+    Near and far clipping follow the height so the Earth is never cut."""
+    ex, _, ez = end
+    end_dist = math.hypot(ex, ez)
+    end_el = math.atan2(ez, ex)
+    for f in list(range(0, frames, 2)) + [frames]:
+        u = f / frames
+        k = u * u * (3 - 2 * u)                              # ease in and out
+        dist = math.exp(math.log(start_height) + (math.log(end_dist) - math.log(start_height)) * k)
+        el = math.radians(88.0) + (end_el - math.radians(88.0)) * min(1.0, k * 1.15)
+        cam.location = (dist * math.cos(el), 0.0, dist * math.sin(el))
+        cam.keyframe_insert("location", frame=f)
+        cam_data.clip_start = max(0.1, dist * 2e-4)
+        cam_data.clip_end = max(20000.0, dist * 3.0)
+        cam_data.keyframe_insert("clip_start", frame=f)
+        cam_data.keyframe_insert("clip_end", frame=f)
+    for fc in _curves(cam) + _curves(cam_data):
+        for kp in fc.keyframe_points:
+            if kp.co[0] <= frames:
+                kp.interpolation = "LINEAR"
 
 
 def configure_render(opts: Options, frames: int, out_dir: Path) -> None:
@@ -1106,9 +1176,13 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     gate_side = max(probe, key=lambda k: (g.at(*probe[k]) if not g.has_sea else g.at(*probe[k]) - g.sea_level))
 
     has_google = bool(manifest.get("google"))
+    before = set(bpy.data.objects)
     pts = build_site(g, pit, pit_depth, gate_side, graded_track=has_google)
+    site_objs = [o for o in bpy.data.objects if o not in before]
     keep_out = (site[0] - 2, site[1] - 2, site[2] + 2, site[3] + 2)
-    got = build_google(g, manifest, env_folder, keep_out, (pts["gate"], pts["out"])) if has_google else None
+    existing: list = []
+    got = build_google(g, manifest, env_folder, keep_out, (pts["gate"], pts["out"]),
+                       existing if tl.clear_end > 0 else None) if has_google else None
     google_level = got[0] if got else None
     if got:
         # Google's mesh is the ground: no terrain under it to poke through where it dips
@@ -1123,14 +1197,78 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     build_model(elements, tl)
     build_plant(elements, tl, fp, top, pts, pit_depth, rng, plan)
     build_crews(tl, fp, pts, pit_depth, rng, plan)
+    before = set(bpy.data.objects)
     build_props(g, fp, pts, plan, rng)
+    site_objs += [o for o in bpy.data.objects if o not in before and o.parent is None]
+    site_objs += plan.get("fixed_people", [])
     clashes = check_clearance(plan.get("people", []), plan.get("machines", []), tl.frames)
+    if tl.clear_end > 0:
+        stage_opening(tl, site_objs, existing, pts["gate"])
     elev, az = build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)
     build_camera(fp, top, tl, opts, pts["out"])
+    if tl.fly_end > 0:
+        fade_to_space(tl)
     _all_constant_hides()
     configure_render(opts, tl.frames, out_dir)
     return {"clashes_removed": clashes, "gate_side": gate_side, "pit_depth": pit_depth, "google": google_level is not None, "sun": [round(elev, 1), round(az, 1)],
             "top": top, "footprint": fp}
+
+
+def stage_opening(tl: Timeline, site_objs: list, existing: list, gate: tuple[float, float]) -> None:
+    """The site as it is today, cleared piece by piece (nearest the gate first) while the
+    excavator works, then the hoarding, cabins and laydown going up."""
+    import bpy
+    ground = {"site_pad", "excavation", "site_walls"}
+    for o in site_objs:
+        base = o.name.split(".")[0]
+        if existing and base in ground:
+            _visible(o, tl.clear_start, None, tl.frames)
+        elif base not in ground:
+            _visible(o, tl.clear_end, None, tl.frames)
+    if not existing:
+        return
+    span = max(2, tl.clear_end - tl.clear_start)
+
+    def centre(o):
+        xs = [v.co.x for v in o.data.vertices] or [0.0]
+        ys = [v.co.y for v in o.data.vertices] or [0.0]
+        return (sum(xs) / len(xs), sum(ys) / len(ys))
+
+    order = sorted(existing, key=lambda o: math.dist(centre(o), gate))
+    n = len(order)
+    for i, o in enumerate(order):
+        top = max((v.co.z for v in o.data.vertices), default=1.0)
+        s0 = tl.clear_start + int(span * 0.75 * i / max(1, n))
+        s1 = s0 + max(2, int(span * 0.25))
+        o.location = (0, 0, 0)
+        o.keyframe_insert("location", frame=s0)
+        o.location = (0, 0, -(top + 1.0))                   # broken down into the ground and carted off
+        o.keyframe_insert("location", frame=s1)
+        _visible(o, None, s1 + 1, tl.frames)
+
+
+def fade_to_space(tl: Timeline) -> None:
+    """Above the atmosphere the sky is black: the world fades from the sky to space as the
+    camera climbs (keyed from the camera's height through the opening flight)."""
+    import bpy
+    world = bpy.context.scene.world
+    nt = world.node_tree
+    bg = nt.nodes.get("Background")
+    link = bg.inputs["Color"].links[0]
+    src = link.from_socket
+    mix = nt.nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.inputs["B"].default_value = (0.0, 0.0, 0.0, 1.0)
+    nt.links.new(src, mix.inputs["A"])
+    nt.links.new(mix.outputs["Result"], bg.inputs["Color"])
+    cam = bpy.context.scene.camera
+    fac = mix.inputs["Factor"]
+    for f in range(0, tl.fly_end + 1, 2):
+        bpy.context.scene.frame_set(f)
+        h = cam.matrix_world.translation.z
+        fac.default_value = min(1.0, max(0.0, (math.log10(max(h, 1.0)) - 4.5) / 1.0))   # 30 km .. 300 km
+        fac.keyframe_insert("default_value", frame=f)
+    bpy.context.scene.frame_set(0)
 
 
 def prop_spots(site: tuple[float, float, float, float], fp, pts: dict[str, Any],
