@@ -38,15 +38,37 @@ image = (
 PROMPT = ("Real aerial drone footage, slowly orbiting a construction site in the middle of Beirut: "
           "a reinforced concrete frame building under construction with grey concrete columns, "
           "slabs and timber formwork, a yellow tower crane, workers in orange hi-vis vests and white "
-          "helmets, concrete mixer trucks, bare compacted soil and gravel round the building, low dark "
-          "green metal hoarding panels along the plot edge. Around it a dense "
-          "real city: beige and white apartment blocks with balconies, asphalt streets with parked "
-          "cars, palm and pine trees, a busy highway. Clear sunny daylight, soft shadows, sharp "
+          "helmets, concrete mixer trucks, the site ground dark brown earth and grey gravel with tyre tracks, low dark "
+          "green metal hoarding panels along the plot edge. Around it a dense, dry "
+          "Mediterranean city: beige and white apartment blocks with balconies, asphalt streets and "
+          "car parks full of cars, a few palm and pine trees, dusty bare lots, a busy highway. Clear sunny daylight, soft shadows, sharp "
           "detail, natural muted colours, photorealistic, shot on a DJI Mavic drone, 4K documentary footage.")
 NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic, toy, low poly, "
             "blurry, smeared, distorted, warped buildings, flicker, text, watermark, subtitles, "
             "overexposed, oversaturated, worst quality, low quality, JPEG artifacts, mosaic, "
-            "tiles pattern, cracked texture, black ground, abstract pattern, neon colours")
+            "tiles pattern, cracked texture, black ground, abstract pattern, neon colours, white sand, "
+            "snow, bleached ground, desert dunes, lush green fields, farmland, grass lawns")
+
+
+def regrade(ai, src, strength: float = 0.7, radius: float = 24.0):
+    """Our render's real colours (Google's photos, our materials) laid back under the AI's
+    detail: each pixel of the AI frame is scaled by how far its blurred colour is from the
+    render's blurred colour there. The AI keeps its texture and light; the brown site and the
+    dry city keep their own colours instead of the AI's bright sand and green fields."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+
+    a = np.asarray(ai, np.float32)
+    a = a / 255.0 if a.max() > 1.5 else a
+    s = np.asarray(src.resize((a.shape[1], a.shape[0])), np.float32) / 255.0
+
+    def soft(x):
+        img = Image.fromarray((np.clip(x, 0, 1) * 255).astype(np.uint8))
+        return (np.asarray(img.filter(ImageFilter.GaussianBlur(radius)), np.float32) / 255.0) ** 2.2
+
+    ratio = np.clip((soft(s) + 1e-3) / (soft(a) + 1e-3), 0.08, 3.0) ** strength
+    out = np.clip((a ** 2.2) * ratio, 0, 1) ** (1 / 2.2)
+    return out.astype(np.float32)
 
 
 def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
@@ -65,7 +87,7 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
 @app.function(image=image, gpu=GPU, volumes={"/models": models}, timeout=3 * 3600)
 def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int = 30,
             width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7,
-            control: str = "depth", near: float = 0.6) -> dict:
+            control: str = "depth", near: float = 0.6, grade: float = 0.7) -> dict:
     """``control``: "depth" guides by depth alone; "mix" guides the near part (the nearest
     ``near`` share of each frame) by depth and the rest by our render in grey, so the AI keeps
     the real streets and blocks round the site (it colours them) instead of inventing new ones."""
@@ -140,6 +162,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
                    conditioning_scale=scale, generator=torch.Generator().manual_seed(seed)).frames[0]
         got = list(got)[:keep]
         out_frames.extend(got if r == 0 else got[overlap:])
+    if grade > 0:
+        out_frames = [regrade(f, frames[i], grade) for i, f in enumerate(out_frames)]
     real = work / "real.mp4"
     export_to_video(out_frames, str(real), fps=fps)
     # the same shot side by side: our render on the left, the AI's on the right
@@ -156,8 +180,9 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
 @app.local_entrypoint()
 def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, steps: int = 30,
-         scale: float = 1.3, control: str = "mix"):
-    got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale, control=control)
+         scale: float = 1.3, control: str = "mix", grade: float = 0.7):
+    got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale,
+                         control=control, grade=grade)
     Path(out).write_bytes(got.pop("real"))
     Path(out).with_name(Path(out).stem + "-side.mp4").write_bytes(got.pop("side"))
     print(f"Written {out}: {got}")
