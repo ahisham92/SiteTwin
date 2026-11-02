@@ -461,7 +461,7 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
         return out
 
     finer = near + far
-    for name, cell, drop in (("city", 60.0, 1.5), ("region", 600.0, 8.0), ("globe", 6000.0, 60.0)):
+    for name, cell, drop in (("city", 60.0, 1.5), ("region", 600.0, 8.0), ("globe", 6000.0, 20.0)):
         objs = load(info.get("intro", {}).get(name, []))
         have = covered(finer, cell)
         kept = []
