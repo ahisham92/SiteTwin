@@ -91,6 +91,97 @@ def _textured(name: str, maps: dict[str, str], size: float, tint: tuple | None =
     return m
 
 
+def _facade_real(tree, bsdf) -> None:
+    """The rebuilt neighbours: each face's wall and roof colours (sampled from Google's photos of
+    that building) on rendered plaster, with a floor every 3.2 m and a window bay every 3 m.
+    Reads the face attributes ``wall``, ``roof`` and ``base`` that scene.rebuild_near writes."""
+    n, ln = tree.nodes, tree.links
+
+    def attr(name):
+        a = n.new("ShaderNodeAttribute")
+        a.attribute_name = name
+        return a
+
+    def math(op, a, b=None, value=None):
+        m = n.new("ShaderNodeMath")
+        m.operation = op
+        ln.new(a, m.inputs[0]) if not isinstance(a, float) else m.inputs[0].__setattr__("default_value", a)
+        if b is not None:
+            if isinstance(b, float):
+                m.inputs[1].default_value = b
+            else:
+                ln.new(b, m.inputs[1])
+        return m.outputs[0]
+
+    def mix(fac, a, b):
+        m = n.new("ShaderNodeMix")
+        m.data_type = "RGBA"
+        ln.new(fac, m.inputs["Factor"])
+        for sock, v in (("A", a), ("B", b)):
+            if isinstance(v, tuple):
+                m.inputs[sock].default_value = (*v, 1.0)
+            else:
+                ln.new(v, m.inputs[sock])
+        return m.outputs["Result"]
+
+    geo = n.new("ShaderNodeNewGeometry")
+    pos = n.new("ShaderNodeSeparateXYZ")
+    ln.new(geo.outputs["Position"], pos.inputs[0])
+    nor = n.new("ShaderNodeSeparateXYZ")
+    ln.new(geo.outputs["Normal"], nor.inputs[0])
+    wall, roof, base, top = attr("wall"), attr("roof"), attr("base"), attr("top")
+    rel = math("SUBTRACT", pos.outputs["Z"], base.outputs["Fac"])
+    storey = math("FRACT", math("DIVIDE", rel, 3.2))
+    nx = math("ABSOLUTE", nor.outputs["X"])
+    ny = math("ABSOLUTE", nor.outputs["Y"])
+    side = math("GREATER_THAN", nx, ny)                     # facing ±X: windows run along Y
+    u = math("ADD", math("MULTIPLY", pos.outputs["Y"], side),
+             math("MULTIPLY", pos.outputs["X"], math("SUBTRACT", 1.0, side)))
+    bay = math("FRACT", math("DIVIDE", u, 3.0))
+    win = math("MULTIPLY", math("GREATER_THAN", bay, 0.2), math("LESS_THAN", bay, 0.8))
+    win = math("MULTIPLY", win, math("GREATER_THAN", storey, 0.3))
+    win = math("MULTIPLY", win, math("LESS_THAN", storey, 0.85))
+    win = math("MULTIPLY", win, math("GREATER_THAN", rel, 0.9))
+    win = math("MULTIPLY", win, math("LESS_THAN", pos.outputs["Z"], math("SUBTRACT", top.outputs["Fac"], 0.4)))
+    is_roof = math("GREATER_THAN", math("ABSOLUTE", nor.outputs["Z"]), 0.6)
+    win = math("MULTIPLY", win, math("SUBTRACT", 1.0, is_roof))
+    slab = math("MULTIPLY", math("LESS_THAN", storey, 0.07), math("SUBTRACT", 1.0, is_roof))
+    noise = n.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = 0.6
+    noise.inputs["Detail"].default_value = 8
+    ln.new(geo.outputs["Position"], noise.inputs["Vector"])
+    grain = n.new("ShaderNodeMapRange")
+    grain.inputs["To Min"].default_value = 0.85
+    grain.inputs["To Max"].default_value = 1.1
+    ln.new(noise.outputs["Fac"], grain.inputs["Value"])
+    surface = mix(is_roof, wall.outputs["Color"], roof.outputs["Color"])
+    shade = n.new("ShaderNodeMix")
+    shade.data_type = "RGBA"
+    shade.blend_type = "MULTIPLY"
+    shade.inputs["Factor"].default_value = 1.0
+    ln.new(surface, shade.inputs["A"])
+    ln.new(grain.outputs["Result"], shade.inputs["B"])
+    banded = mix(math("MULTIPLY", slab, 0.35), shade.outputs["Result"], (0.1, 0.1, 0.1))
+    colour = mix(win, banded, (0.035, 0.045, 0.055))
+    ln.new(colour, bsdf.inputs["Base Color"])
+    rough = n.new("ShaderNodeMapRange")
+    rough.inputs["To Min"].default_value = 0.85
+    rough.inputs["To Max"].default_value = 0.06
+    ln.new(win, rough.inputs["Value"])
+    ln.new(rough.outputs["Result"], bsdf.inputs["Roughness"])
+    spec = n.new("ShaderNodeMapRange")
+    spec.inputs["To Min"].default_value = 0.3
+    spec.inputs["To Max"].default_value = 1.0
+    ln.new(win, spec.inputs["Value"])
+    if "Specular IOR Level" in bsdf.inputs:
+        ln.new(spec.outputs["Result"], bsdf.inputs["Specular IOR Level"])
+    bump = n.new("ShaderNodeBump")                          # windows set back in the wall
+    bump.inputs["Strength"].default_value = 0.6
+    bump.inputs["Distance"].default_value = 0.15
+    ln.new(math("SUBTRACT", 1.0, math("MAXIMUM", win, math("MULTIPLY", slab, -1.0))), bump.inputs["Height"])
+    ln.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+
+
 def get(name: str):
     """A material by its role, made once."""
     if name in _cache:
@@ -155,6 +246,11 @@ def get(name: str):
         b.inputs["Strength"].default_value = 0.08
         tree.links.new(wave.outputs["Fac"], b.inputs["Height"])
         tree.links.new(b.outputs["Normal"], bsdf.inputs["Normal"])
+    elif name == "facade_real":
+        _facade_real(tree, bsdf)
+    elif name == "road_paint":
+        bsdf.inputs["Base Color"].default_value = (0.82, 0.82, 0.78, 1)
+        bsdf.inputs["Roughness"].default_value = 0.7
     elif name == "facade":              # the neighbours: rendered plaster and stone
         _noise_mix(tree, bsdf, (0.62, 0.58, 0.52), (0.78, 0.75, 0.70), scale=0.08, rough=(0.7, 0.9), bump=0.1)
     elif name == "facade_dark":
