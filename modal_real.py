@@ -194,8 +194,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     pipe = WanVACEPipeline.from_pretrained(MODEL, vae=vae, torch_dtype=torch.bfloat16)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=3.0)
     pipe.to("cuda")
-    if width * height > 832 * 480:
-        pipe.vae.enable_tiling()                       # 720p: decode the video in tiles
+    # (no tiled decoding: at 720p its tiles came out in different brightness, a dark box over
+    # the site; an H100 decodes 81 frames of 720p whole)
     models.commit()
 
     def to_pil(a):
