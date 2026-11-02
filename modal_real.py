@@ -41,13 +41,14 @@ PROMPT = ("Real aerial drone footage, slowly orbiting a construction site in the
           "helmets, concrete mixer trucks, the site ground dark brown earth and grey gravel with tyre tracks, low dark "
           "green metal hoarding panels along the plot edge. Around it a dense, dry "
           "Mediterranean city: beige and white apartment blocks with balconies, asphalt streets and "
-          "car parks full of cars, a few palm and pine trees, dusty bare lots, a busy highway. Clear sunny daylight, soft shadows, sharp "
+          "car parks full of white, silver, grey and black cars, a few palm and pine trees, dusty bare lots, a busy highway. Clear sunny daylight, soft shadows, sharp "
           "detail, natural muted colours, photorealistic, shot on a DJI Mavic drone, 4K documentary footage.")
 NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic, toy, low poly, "
             "blurry, smeared, distorted, warped buildings, flicker, text, watermark, subtitles, "
             "overexposed, oversaturated, worst quality, low quality, JPEG artifacts, mosaic, "
             "tiles pattern, cracked texture, black ground, abstract pattern, neon colours, white sand, "
-            "snow, bleached ground, desert dunes, lush green fields, farmland, grass lawns")
+            "snow, bleached ground, desert dunes, lush green fields, farmland, grass lawns, rows of blue cars, "
+            "garbled text, captions")
 
 
 def regrade(ai, src, strength: float = 0.7, radius: float = 24.0):
@@ -76,12 +77,45 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
     import subprocess
 
     from PIL import Image
-    out = path.parent / "frames"
+    out = path.parent / f"frames_{width}x{height}"
     out.mkdir(exist_ok=True)
     vf = f"fps={fps},scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}"
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(path), "-t", str(seconds),
                     "-vf", vf, str(out / "f%05d.png")], check=True)
     return [Image.open(p).convert("RGB") for p in sorted(out.glob("f*.png"))]
+
+
+BAND = 132 / 1080      # the caption band at the foot of our frames (render.caption), share of height
+
+
+def _finish(src: Path, ai_frames: list, fps: int, width: int, height: int, seconds: float,
+            out: Path) -> None:
+    """The AI's frames brought up to the film's own height, with our caption band (step, week,
+    progress bar, credits) laid back on, sharp, from the original film."""
+    import subprocess
+
+    import numpy as np
+    from PIL import Image
+    probe = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                            "stream=height", "-of", "csv=p=0", str(src)], capture_output=True, text=True)
+    H = min(1080, int(probe.stdout.strip() or height))
+    H -= H % 2
+    W = int(round(H * width / height / 2)) * 2
+    hi = _frames(src, fps, W, H, seconds)
+    band = int(round(H * BAND)) + 2
+    out_dir = src.parent / "final"
+    out_dir.mkdir(exist_ok=True)
+    for i, f in enumerate(ai_frames):
+        a = np.asarray(f)
+        if a.dtype != np.uint8:
+            a = (np.clip(a, 0, 1) * 255).astype(np.uint8)
+        im = Image.fromarray(a).resize((W, H), Image.LANCZOS)
+        if i < len(hi):
+            im.paste(hi[i].crop((0, H - band, W, H)), (0, H - band))
+        im.save(out_dir / f"f{i + 1:05d}.png")
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-framerate", str(fps), "-i",
+                    str(out_dir / "f%05d.png"), "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18",
+                    "-movflags", "+faststart", str(out)], check=True)
 
 
 @app.function(image=image, gpu=GPU, volumes={"/models": models}, timeout=3 * 3600)
@@ -164,14 +198,16 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         out_frames.extend(got if r == 0 else got[overlap:])
     if grade > 0:
         out_frames = [regrade(f, frames[i], grade) for i, f in enumerate(out_frames)]
+    import subprocess
+    low = work / "low.mp4"
+    export_to_video(out_frames, str(low), fps=fps)
     real = work / "real.mp4"
-    export_to_video(out_frames, str(real), fps=fps)
+    _finish(src, out_frames, fps, width, height, seconds, real)
     # the same shot side by side: our render on the left, the AI's on the right
     side = work / "side.mp4"
-    import subprocess
     plain = work / "plain.mp4"
     export_to_video([np.asarray(f, dtype=np.float32) / 255 for f in frames[:len(out_frames)]], str(plain), fps=fps)
-    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(plain), "-i", str(real),
+    subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(plain), "-i", str(low),
                     "-filter_complex", "hstack", "-c:v", "libx264", "-crf", "18", str(side)], check=True)
     return {"real": real.read_bytes(), "side": side.read_bytes(), "frames": len(out_frames),
             "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL,
