@@ -653,29 +653,39 @@ def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict
     # --- piling rig and excavator in the pit during the foundations
     pile_guids = [g for st in tl.steps if st.phase == "Foundations" for g in st.guids
                   if by_guid[g].kind == "IFCPILE"]
+    machines: list[L.Machine] = plan.setdefault("machines", []) if isinstance(plan, dict) else []
     if "piling_rig" in windows:
         s, e = windows["piling_rig"][0]
         rig = E.piling_rig()
         _visible(rig, s, e, tl.frames)
         targets = pile_guids or [g for st in tl.steps if st.phase == "Foundations" for g in st.guids]
         stride = max(1, len(targets) // 30)
+        stops, times = [], []
         for g in targets[::stride]:
-            a, b, _ = tl.appear[g]
+            a, _, _ = tl.appear[g]
             c = by_guid[g].centre
-            rig.location = (float(c[0]) - 2.6, float(c[1]), -pit_depth)
-            rig.keyframe_insert("location", frame=a)
-        rig.location = (cx, cy, -pit_depth) if not targets else rig.location
+            t = max(s, a - 2)
+            if times and t <= times[-1] + 2:
+                continue
+            stops.append((float(c[0]) - 2.6, float(c[1])))
+            times.append(t)
+        if not stops:
+            stops, times = [(cx, cy)], [s]
+        keys = L.drive(stops, times, -pit_depth)
+        keys = [(s, *keys[0][1:])] + [k for k in keys if k[0] > s] + [(e, *keys[-1][1:])]
+        _apply_keys(rig, keys)
+        machines.append(L.Machine("piling_rig", _half_length(rig) + 0.5, keys))
     if "excavator" in windows:
         s, e = windows["excavator"][0]
         ex = E.excavator()
         _visible(ex, s, e, tl.frames)
-        n = 6
-        for k in range(n + 1):
-            f = int(s + (e - s) * k / n)
-            ex.location = (x0 + 3 + (x1 - x0 - 6) * rng.random(), y0 + 3 + (y1 - y0 - 6) * rng.random(), -pit_depth)
-            ex.rotation_euler = (0, 0, rng.uniform(-math.pi, math.pi))
-            ex.keyframe_insert("location", frame=f)
-            ex.keyframe_insert("rotation_euler", frame=f)
+        n = 5
+        pts_ = [(x0 + 4 + (x1 - x0 - 8) * rng.random(), y0 + 4 + (y1 - y0 - 8) * rng.random()) for _ in range(n)]
+        stops = L.nearest_order(pts_, (x0 + 4, y0 + 4))
+        times = [int(s + (e - s) * k / max(1, n - 1)) for k in range(n)]
+        keys = L.drive(stops, times, -pit_depth)
+        _apply_keys(ex, keys)
+        machines.append(L.Machine("excavator", _half_length(ex) + 0.5, keys))
 
     # --- trucks: in along the lane to the bay, stand, reverse out; one in the lane at a time
     lane = plan.get("lane")
@@ -698,10 +708,14 @@ def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict
             truck.keyframe_insert("rotation_euler", frame=v.arrive)
             truck.location = (0, 0, -500)
             truck.keyframe_insert("location", frame=v.arrive - 1)
-            for f in range(v.arrive, v.gone + 1, 3):
-                (x, y), _ = L.truck_at(v, f, lane)
+            half = _half_length(truck)
+            keys = []
+            for f in list(range(v.arrive, v.gone + 1, 3)) + [v.gone]:
+                (x, y), _ = L.truck_at(v, f, lane, back=half)
                 truck.location = (x, y, 0.02)
                 truck.keyframe_insert("location", frame=f)
+                keys.append((f, x, y, lane.heading_in, 0.02))
+            machines.append(L.Machine(v.kind, half + 0.5, keys))
             truck.location = (0, 0, -500)
             truck.keyframe_insert("location", frame=v.gone + 1)
         for pool in fleet.values():
@@ -715,21 +729,52 @@ def build_plant(elements: list[Element], tl: Timeline, fp, top: float, pts: dict
         px, py = plan.get("pump_at", (cx + nx * 10, cy + ny * 10))
         pump.location = (px, py, 0.02)
         pump.rotation_euler = (0, 0, math.atan2(cy - py, cx - px))
+        h = math.atan2(cy - py, cx - px)
+        machines.append(L.Machine("concrete_pump", _half_length(pump) + 0.5, [(s, px, py, h, 0.02), (e, px, py, h, 0.02)]))
 
-    # --- MEWP round the facade
+    # --- MEWP round the facade: drives along the perimeter, turning at the corners
     for (s, e) in windows.get("mewp", []):
         lift = E.mewp()
         _visible(lift, s, e, tl.frames)
         perim = [(x0 - 2.5, y0 - 2.5), (x1 + 2.5, y0 - 2.5), (x1 + 2.5, y1 + 2.5), (x0 - 2.5, y1 + 2.5)]
-        n = 8
-        for k in range(n + 1):
-            a, b = perim[k % 4], perim[(k + 1) % 4]
-            t = rng.random()
-            lift.location = (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, 0.02)
-            lift.rotation_euler = (0, 0, math.atan2(b[1] - a[1], b[0] - a[0]))
-            f = int(s + (e - s) * k / n)
-            lift.keyframe_insert("location", frame=f)
-            lift.keyframe_insert("rotation_euler", frame=f)
+        stops = []
+        for k in range(4):                                  # once round: a stop mid-side, then the corner
+            a, b = perim[k], perim[(k + 1) % 4]
+            stops += [a, ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)]
+        stops.append(perim[0])
+        times = [int(s + (e - s) * k / (len(stops) - 1)) for k in range(len(stops))]
+        keys = L.drive(stops, times, 0.02)
+        _apply_keys(lift, keys)
+        machines.append(L.Machine("mewp", _half_length(lift) + 0.5, keys))
+
+
+def _half_length(obj) -> float:
+    """Half the longest side of an object (and its parts) in plan, in metres."""
+    import mathutils
+    xs, ys = [], []
+    for o in [obj, *obj.children_recursive]:
+        if o.type != "MESH":
+            continue
+        for v in o.bound_box:
+            p = mathutils.Vector(v)
+            q = o
+            while q is not obj and q is not None:            # up the chain in local terms
+                p = q.matrix_local @ p
+                q = q.parent
+            xs.append(p.x)
+            ys.append(p.y)
+    if not xs:
+        return 2.0
+    return max(max(xs) - min(xs), max(ys) - min(ys)) / 2
+
+
+def _apply_keys(obj, keys) -> None:
+    for f, x, y, h, z in keys:
+        obj.location = (x, y, z)
+        obj.rotation_euler = (0, 0, h)
+        obj.keyframe_insert("location", frame=f)
+        obj.keyframe_insert("rotation_euler", frame=f)
+    _linear(obj)
 
 
 def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: random.Random,
@@ -739,6 +784,7 @@ def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: ra
     plan = plan or {}
     lane = plan.get("lane")
     crane = plan.get("crane")
+    machines: list[L.Machine] = plan.get("machines", [])
     x0, y0, x1, y1 = fp
     pool = max(st.crew for st in tl.steps) if tl.steps else 0
     people = [E.worker("hivis" if k % 3 else "hivis_yellow", seed=k) for k in range(pool)]
@@ -748,19 +794,24 @@ def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: ra
     for st in tl.steps:
         z = _level_for(st)
         loads = [l.place[:2] for l in (crane.lifts if crane else []) if st.start <= l.end and l.start <= st.end]
-        spots = L.crew_spots(st.crew, (x0, y0, x1, y1), z, rng, lane, loads)
-        ends = L.crew_spots(st.crew, (x0, y0, x1, y1), z, rng, lane, loads)
+        win = (st.start, st.end)
+        spots = L.crew_spots(st.crew, (x0, y0, x1, y1), z, rng, lane, loads, machines=machines, frames=win)
+        ends = L.crew_spots(st.crew, (x0, y0, x1, y1), z, rng, lane, loads, machines=machines, frames=win)
         for k, w in enumerate(people):
             if k >= len(spots):
                 w.location = (0, 0, -500)
                 w.keyframe_insert("location", frame=st.start)
                 continue
             a = spots[k]
-            # a short walk towards another safe spot, never more than 4 m
+            # a short walk towards another safe spot, never more than 4 m, and only if the way is clear
             b = ends[k] if k < len(ends) else a
             d = math.dist(a[:2], b[:2])
             if d > 4.0:
                 b = (a[0] + (b[0] - a[0]) * 4.0 / d, a[1] + (b[1] - a[1]) * 4.0 / d, z)
+            mid = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, z)
+            if not (L.clear_spot(b, *win, machines) and L.clear_spot(mid, *win, machines)):
+                b = a
+            d = math.dist(a[:2], b[:2])
             w.location = a
             w.rotation_euler = (0, 0, math.atan2(b[1] - a[1], b[0] - a[0]) if d > 0.1 else rng.uniform(-math.pi, math.pi))
             w.keyframe_insert("location", frame=st.start)
@@ -775,15 +826,54 @@ def build_crews(tl: Timeline, fp, pts: dict[str, Any], pit_depth: float, rng: ra
     nx, ny = pts["out"]
     tx, ty = pts["along"]
     lay = pts["laydown"]
-    # two riggers by the laydown, slinging the loads; a banksman by the gate, beside the lane
+    # two riggers by the laydown, slinging the loads; a banksman by the gate, beside the lane.
+    # Each stands where no machine ever comes; if the first place is not, the next one along.
+    fixed = []
     for k, (px, py) in enumerate([(lay[0] + tx * 4.5 - nx * 1.5, lay[1] + ty * 4.5 - ny * 1.5),
                                   (lay[0] + tx * 4.5 + nx * 1.5, lay[1] + ty * 4.5 + ny * 1.5),
                                   (gx - nx * 2 + tx * 6.5, gy - ny * 2 + ty * 6.5)]):
-        if lane is not None and not lane.keeps_clear((px, py)):
-            px, py = px + tx * 3, py + ty * 3
+        for step in range(12):
+            q = (px + tx * 1.5 * step, py + ty * 1.5 * step, 0.02)
+            if (lane is None or lane.keeps_clear(q[:2])) and L.clear_spot(q, 0, tl.frames, machines):
+                break
+        else:
+            continue                                     # nowhere safe: this one is left out
         w = E.worker("hivis_yellow", seed=100 + k)
-        w.location = (px, py, 0.02)
-        w.rotation_euler = (0, 0, math.atan2(gy - py, gx - px) if k == 2 else math.atan2(lay[1] - py, lay[0] - px))
+        w.location = q
+        w.rotation_euler = (0, 0, math.atan2(gy - q[1], gx - q[0]) if k == 2 else math.atan2(lay[1] - q[1], lay[0] - q[0]))
+        fixed.append(w)
+    plan["people"] = people + fixed
+
+
+def check_clearance(people: list, machines: list, frames: int, step: int = 2, fix: bool = True) -> int:
+    """Every person against every machine, every ``step`` frames, from their actual keyframes.
+    Returns how many (person, frame) clashes there were; with ``fix``, a person who would be
+    within a machine's reach is taken out of the shot for those frames (a last guard: the
+    planning above should leave none)."""
+    clashes = 0
+    for w in people:
+        curves = {fc.array_index: fc for fc in _curves(w) if fc.data_path == "location"}
+        bad: list[int] = []
+        for f in range(0, frames + 1, step):
+            p = [curves[i].evaluate(f) if i in curves else w.location[i] for i in range(3)]
+            if p[2] < -400:
+                continue
+            for m in machines:
+                at = m.at(f)
+                if at is not None and abs(at[3] - p[2]) < 2.5 and math.dist(at[:2], p[:2]) < m.radius + 0.5:
+                    bad.append(f)
+                    break
+        clashes += len(bad)
+        if fix and bad:
+            for o in [w, *w.children_recursive]:
+                for f in bad:
+                    for frame, hidden in ((max(0, f - step), True), (f + step + 1, False)):
+                        o.hide_render = hidden
+                        o.hide_viewport = hidden
+                        o.keyframe_insert("hide_render", frame=frame)
+                        o.keyframe_insert("hide_viewport", frame=frame)
+                o.hide_render = o.hide_viewport = False
+    return clashes
 
 
 def _constant_jumps(obj) -> None:
@@ -804,7 +894,11 @@ def _level_for(st) -> float:
 
 # ---- light, camera, render ----------------------------------------------------------------
 
-def build_light(lat: float, lon: float, when: dt.datetime | None) -> tuple[float, float]:
+def build_light(lat: float, lon: float, when: dt.datetime | None, frames: int = 0, fps: int = 24,
+                day_seconds: float = 5.0) -> tuple[float, float]:
+    """Sky and sun for the site's date. With ``frames``, the film is a time-lapse: every
+    ``day_seconds`` of film the sun sweeps from morning to evening (shadows wheel round the
+    building) and the next day starts; nights are skipped, as a site camera's would be."""
     import bpy
     when = when or dt.datetime.now().replace(hour=10, minute=30)
     hour_utc = when.hour + when.minute / 60 - lon / 15.0
@@ -848,7 +942,48 @@ def build_light(lat: float, lon: float, when: dt.datetime | None) -> tuple[float
     sun = bpy.data.objects.new("sun", sun_data)
     bpy.context.scene.collection.objects.link(sun)
     sun.rotation_euler = (math.radians(90 - elev), 0, math.radians((180 - az) % 360))
+    if frames > 0:
+        _sweep_sun(sun, sky, lat, lon, when, frames, max(1, int(day_seconds * fps)))
     return elev, az
+
+
+def _sweep_sun(sun, sky, lat: float, lon: float, when: dt.datetime, frames: int, cycle: int) -> None:
+    """Key the sun (and the sky's sun) from 8:00 to 17:00 local solar time over each cycle."""
+    keys = []
+    f = 0
+    while f <= frames + cycle:
+        for share, hour in ((0.0, 8.0), (0.25, 10.25), (0.5, 12.5), (0.75, 14.75), (0.98, 17.0)):
+            el, az = sun_position(lat, lon, when.year, when.month, when.day, hour - lon / 15.0)
+            el = max(10.0, el)
+            keys.append((f + int(share * cycle), el, az))
+        f += cycle
+    prev_rot = None
+    for frame, el, az in keys:
+        rot_z = math.radians((180 - az) % 360)
+        if prev_rot is not None:
+            while rot_z - prev_rot > math.pi:
+                rot_z -= 2 * math.pi
+            while rot_z - prev_rot < -math.pi:
+                rot_z += 2 * math.pi
+        sun.rotation_euler = (math.radians(90 - el), 0, rot_z)
+        sun.keyframe_insert("rotation_euler", frame=frame)
+        warm = min(1.0, max(0.0, (el - 10) / 30))
+        sun.data.color = (1.0, 0.82 + 0.18 * warm, 0.66 + 0.34 * warm)
+        sun.data.keyframe_insert("color", frame=frame)
+        sky.sun_elevation = math.radians(el)
+        sky.sun_rotation = rot_z + math.pi / 2
+        sky.keyframe_insert("sun_elevation", frame=frame)
+        sky.keyframe_insert("sun_rotation", frame=frame)
+        prev_rot = rot_z
+    # the evening key jumps straight to the next morning: a new day, not the sun running back
+    for owner in (sun, sun.data, sky.id_data):
+        for fc in _curves(owner):
+            pts = fc.keyframe_points
+            for i, kp in enumerate(pts):
+                if i + 1 < len(pts) and int(round(pts[i + 1].co[0])) % cycle == 0:
+                    kp.interpolation = "CONSTANT"
+                else:
+                    kp.interpolation = "LINEAR"
 
 
 def build_camera(fp, top: float, tl: Timeline, opts: Options, gate_dir: tuple[float, float]):
@@ -989,11 +1124,12 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     build_plant(elements, tl, fp, top, pts, pit_depth, rng, plan)
     build_crews(tl, fp, pts, pit_depth, rng, plan)
     build_props(g, fp, pts, plan, rng)
-    elev, az = build_light(manifest["lat"], manifest["lon"], opts.when)
+    clashes = check_clearance(plan.get("people", []), plan.get("machines", []), tl.frames)
+    elev, az = build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)
     build_camera(fp, top, tl, opts, pts["out"])
     _all_constant_hides()
     configure_render(opts, tl.frames, out_dir)
-    return {"gate_side": gate_side, "pit_depth": pit_depth, "google": google_level is not None, "sun": [round(elev, 1), round(az, 1)],
+    return {"clashes_removed": clashes, "gate_side": gate_side, "pit_depth": pit_depth, "google": google_level is not None, "sun": [round(elev, 1), round(az, 1)],
             "top": top, "footprint": fp}
 
 

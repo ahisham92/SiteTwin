@@ -36,6 +36,13 @@ def test_the_scene_has_the_building_the_site_and_the_plant(tmp_path):
             "tower_crane_mast", "piling_rig", "mixer_truck", "worker"} <= names
     assert sum(1 for o in bpy.data.objects if o.name.startswith("el_")) == len(els)
     assert info["pit_depth"] == 1.5
+    assert info["clashes_removed"] == 0             # the planning keeps people out of every machine's way
+    # a time-lapse: the sun sweeps across each day, so shadows move
+    sun = bpy.data.objects["sun"]
+    bpy.context.scene.frame_set(0)
+    morning = tuple(sun.rotation_euler)
+    bpy.context.scene.frame_set(25)                 # half a 5 s day at 10 fps
+    assert tuple(sun.rotation_euler) != morning
     # before the build nothing of the building is seen; at the end all of it is
     first = next(o for o in bpy.data.objects if o.name.startswith("el_"))
     bpy.context.scene.frame_set(1)

@@ -157,3 +157,34 @@ def plant_windows(tl: Timeline) -> dict[str, list[tuple[int, int]]]:
         spans = out["tower_crane"]
         out["tower_crane"] = [(spans[0][0], spans[-1][1])]
     return out
+
+
+#: Working days each kind of step takes on a real job of this kind (a typical mid-rise frame);
+#: the film's calendar runs through them, so the counter shows the job's real pace.
+WORK_DAYS = {"Foundations": 40, "Vertical structure": 12, "Horizontal structure": 10, "Floors": 8,
+             "Stairs and ramps": 5, "Roof": 15, "Envelope": 18, "Railings and finishes": 10,
+             "Services": 15, "Other": 5}
+#: Setting up the site before the first step: hoarding, cabins, crane.
+SETUP_DAYS = 15
+
+
+def calendar(tl: Timeline) -> list[tuple[int, float]]:
+    """(frame, calendar day) pairs through the film: day 0 when the site is handed over, the
+    setup before the first step, then each step's working days (5 working days a week)."""
+    pts = [(0, 0.0), (tl.build_start, SETUP_DAYS * 7 / 5)]
+    day = pts[-1][1]
+    for st in tl.steps:
+        if st.start > pts[-1][0]:
+            pts.append((st.start, day))
+        day += WORK_DAYS.get(st.phase, 5) * 7 / 5
+        pts.append((max(st.end, pts[-1][0] + 1), day))
+    if tl.frames > pts[-1][0]:
+        pts.append((tl.frames, day))
+    return pts
+
+
+def day_at(cal: list[tuple[int, float]], frame: float) -> float:
+    for (f0, d0), (f1, d1) in zip(cal, cal[1:]):
+        if f0 <= frame <= f1:
+            return d0 + (d1 - d0) * ((frame - f0) / max(1, f1 - f0))
+    return cal[-1][1]
