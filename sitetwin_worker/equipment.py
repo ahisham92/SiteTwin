@@ -118,6 +118,83 @@ def _load(kind: str, path: Path, height: float, yaw: float, length: float | None
     return meshes
 
 
+def _split(meshes: list, gap: float = 0.3) -> list[list]:
+    """Group a pack's meshes into its separate models: meshes whose plan footprints touch (within
+    ``gap``) belong together."""
+    boxes = []
+    for d in meshes:
+        xs = [v.co.x for v in d.vertices] or [0.0]
+        ys = [v.co.y for v in d.vertices] or [0.0]
+        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    parent = list(range(len(meshes)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i, a in enumerate(boxes):
+        for j in range(i + 1, len(boxes)):
+            b = boxes[j]
+            if a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]:
+                parent[find(i)] = find(j)
+    groups: dict[int, list] = {}
+    for i, d in enumerate(meshes):
+        groups.setdefault(find(i), []).append(d)
+    return list(groups.values())
+
+
+def _load_pack(kind: str, path: Path, height: float, yaw: float, length: float | None) -> list[list]:
+    """A pack of several models side by side in one file (cars, trees): each one stood up and
+    sized on its own, as ``_load`` does for a single model. Returns a list of mesh lists."""
+    import mathutils
+    meshes = _load(kind, path, 0.0, yaw, None)                # as modelled, rotated
+    out = []
+    for group in _split(meshes):
+        lo = [min(v.co[i] for d in group for v in d.vertices) for i in range(3)]
+        hi = [max(v.co[i] for d in group for v in d.vertices) for i in range(3)]
+        size = max(hi[0] - lo[0], hi[1] - lo[1])
+        if size < 1e-3 or (hi[2] - lo[2]) < 1e-3:
+            continue
+        k = (length / size) if length else (height / (hi[2] - lo[2]))
+        fit = mathutils.Matrix.Scale(k, 4) @ mathutils.Matrix.Translation(
+            (-(lo[0] + hi[0]) / 2, -(lo[1] + hi[1]) / 2, -lo[2]))
+        copies = []
+        for d in group:
+            c = d.copy()
+            c.transform(fit)
+            copies.append(c)
+        out.append(copies)
+    return out
+
+
+def variant(kind: str, n: int):
+    """The n-th model of a pack (wrapping round), as a new object; None when there is none."""
+    path = _model_file(kind)
+    if path is None:
+        return None
+    import bpy
+    key = kind + ":pack"
+    if key not in _library:
+        try:
+            from .assets import CATALOG
+            entry = CATALOG.get(kind, {})
+            _library[key] = _load_pack(kind, path, float(entry.get("height", 1.0)),
+                                       float(entry.get("yaw", 0.0)), entry.get("length"))
+        except Exception:                                     # noqa: BLE001 - nothing stands in
+            _library[key] = []
+    packs = _library[key]
+    if not packs:
+        return None
+    root = bpy.data.objects.new(f"{kind}_{n % len(packs)}", None)
+    bpy.context.scene.collection.objects.link(root)
+    for d in packs[n % len(packs)]:
+        o = bpy.data.objects.new(f"{kind}_part", d)
+        bpy.context.scene.collection.objects.link(o)
+        o.parent = root
+    return root
+
+
 def _asset(kind: str, height: float):
     """A copy of the real model of ``kind`` (sharing its meshes with the other copies), or None
     when there is none and the built-in shape is used."""
