@@ -63,7 +63,11 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
 
 @app.function(image=image, gpu=GPU, volumes={"/models": models}, timeout=3 * 3600)
 def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int = 30,
-            width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7) -> dict:
+            width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7,
+            control: str = "depth", near: float = 0.6) -> dict:
+    """``control``: "depth" guides by depth alone; "mix" guides the near part (the nearest
+    ``near`` share of each frame) by depth and the rest by our render in grey, so the AI keeps
+    the real streets and blocks round the site (it colours them) instead of inventing new ones."""
     import tempfile
     import time
 
@@ -97,6 +101,10 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         # which a plain scale leaves near black, still give the AI their shapes
         ranks = np.argsort(np.argsort(d.ravel()))
         d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
+        if control == "mix":
+            grey = np.asarray(f.convert("L").resize((d.shape[1], d.shape[0])), dtype=np.float32)
+            far = d < (1.0 - near) * 255                  # depth-anything: bigger is nearer
+            d = np.where(far, grey, d)
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
     torch.cuda.empty_cache()
@@ -126,13 +134,14 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(plain), "-i", str(real),
                     "-filter_complex", "hstack", "-c:v", "libx264", "-crf", "18", str(side)], check=True)
     return {"real": real.read_bytes(), "side": side.read_bytes(), "frames": len(out_frames),
-            "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL}
+            "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL,
+            "control": control}
 
 
 @app.local_entrypoint()
 def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, steps: int = 30,
-         scale: float = 1.0):
-    got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale)
+         scale: float = 1.0, control: str = "depth"):
+    got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale, control=control)
     Path(out).write_bytes(got.pop("real"))
     Path(out).with_name(Path(out).stem + "-side.mp4").write_bytes(got.pop("side"))
     print(f"Written {out}: {got}")
