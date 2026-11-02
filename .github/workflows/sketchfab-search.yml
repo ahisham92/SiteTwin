@@ -15,3 +15,4 @@ jobs:
       - run: python tools/sketchfab_search.py "$KINDS"
         env:
           KINDS: ${{ inputs.kinds }}
+      - run: python tools/polyhaven_list.py | head -70
