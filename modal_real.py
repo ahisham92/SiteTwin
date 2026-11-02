@@ -141,7 +141,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
 @app.local_entrypoint()
 def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, steps: int = 30,
-         scale: float = 1.0, control: str = "depth"):
+         scale: float = 1.3, control: str = "mix"):
     got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale, control=control)
     Path(out).write_bytes(got.pop("real"))
     Path(out).with_name(Path(out).stem + "-side.mp4").write_bytes(got.pop("side"))
