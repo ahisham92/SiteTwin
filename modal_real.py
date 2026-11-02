@@ -35,14 +35,17 @@ image = (
     .env({"HF_HOME": "/models/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0"})
 )
 
-PROMPT = ("Real aerial drone footage of a construction site in a Mediterranean city: a reinforced "
-          "concrete frame building under construction with columns, slabs and formwork, a yellow "
-          "tower crane, workers in orange hi-vis and white helmets, concrete mixer trucks, site "
-          "hoarding, surrounded by real apartment buildings, streets, parked cars and trees. "
-          "Natural daylight, sharp detail, photorealistic, shot on a DJI drone, 4K documentary.")
+PROMPT = ("Real aerial drone footage, slowly orbiting a construction site in the middle of Beirut: "
+          "a reinforced concrete frame building under construction with grey concrete columns, "
+          "slabs and timber formwork, a yellow tower crane, workers in orange hi-vis vests and white "
+          "helmets, concrete mixer trucks, green site hoarding around the plot. Around it a dense "
+          "real city: beige and white apartment blocks with balconies, asphalt streets with parked "
+          "cars, palm and pine trees, a busy highway. Clear sunny daylight, soft shadows, sharp "
+          "detail, photorealistic, shot on a DJI Mavic drone, 4K documentary footage.")
 NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic, toy, low poly, "
             "blurry, smeared, distorted, warped buildings, flicker, text, watermark, subtitles, "
-            "overexposed, oversaturated, worst quality, low quality, JPEG artifacts")
+            "overexposed, oversaturated, worst quality, low quality, JPEG artifacts, mosaic, "
+            "tiles pattern, cracked texture, black ground, abstract pattern")
 
 
 def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
@@ -79,15 +82,21 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     fps = 16
     frames = _frames(src, fps, width, height, seconds)
     n = len(frames)
-    runs = max(1, (n - 1) // 80)
-    frames = frames[:runs * 80 + 1]
+    # Each run makes 81 frames; its last few wash out, so only the first 73 are kept and the next
+    # run starts there (73 + 72 + 72 ...).
+    keep, stride = 73, 72
+    runs = max(1, 1 + (n - 81) // stride) if n >= 81 else 1
+    frames = frames[:stride * (runs - 1) + 81]
 
     depth_model = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf",
                            device="cuda")
     depth = []
     for f in frames:
         d = np.array(depth_model(f)["depth"], dtype=np.float32)
-        d = (d - d.min()) / max(1e-6, d.max() - d.min()) * 255
+        # spread the values evenly (histogram equalisation), so the far streets and buildings,
+        # which a plain scale leaves near black, still give the AI their shapes
+        ranks = np.argsort(np.argsort(d.ravel()))
+        d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
     torch.cuda.empty_cache()
@@ -101,10 +110,11 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
     out_frames = []
     for r in range(runs):
-        part = depth[r * 80:r * 80 + 81]
+        part = depth[r * stride:r * stride + 81]
         got = pipe(video=part, prompt=prompt, negative_prompt=NEGATIVE, height=height, width=width,
                    num_frames=len(part), num_inference_steps=steps, guidance_scale=5.0,
                    conditioning_scale=scale, generator=torch.Generator().manual_seed(seed)).frames[0]
+        got = list(got)[:keep]
         out_frames.extend(got if r == 0 else got[1:])
     real = work / "real.mp4"
     export_to_video(out_frames, str(real), fps=fps)

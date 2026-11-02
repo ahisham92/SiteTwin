@@ -39,4 +39,4 @@ jobs:
           git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
           git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
           git fetch -q origin sample-films && git reset -q --soft FETCH_HEAD || true
-          git add . && git commit -qm "Sample film from run $RUN" && git push -q origin HEAD:sample-films
+          git add -- *.mp4 *.jpg && git commit -qm "Sample film from run $RUN" && git push -q origin HEAD:sample-films
