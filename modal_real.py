@@ -85,22 +85,26 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
     return [Image.open(p).convert("RGB") for p in sorted(out.glob("f*.png"))]
 
 
-def building_mix(frames: list, near: float, ramp: int = 16) -> list[float]:
-    """How much of each frame the AI may draw from depth alone. Until the build starts (the site as
-    it is today, its clearing and the set-up) none: the AI only colours our render's own picture,
-    so today's site stays what it really is. From the build on, the nearest ``near`` share, eased
-    in over ``ramp`` frames. The build's start is read off the caption's orange progress bar."""
+def build_start(frames: list) -> int | None:
+    """The first frame of the build, read off the caption's orange progress bar (render.caption)."""
     import numpy as np
-    out, start = [], None
     for i, f in enumerate(frames):
         a = np.asarray(f, dtype=np.int16)
         h = a.shape[0]
         strip = a[int(h * 0.966):int(h * 0.992)]
         orange = (strip[..., 0] > 200) & (strip[..., 1] > 110) & (strip[..., 1] < 200) & (strip[..., 2] < 100)
-        if start is None and orange.any(axis=0).sum() > 4:
-            start = i
-        out.append(0.0 if start is None else near * min(1.0, (i - start + 1) / ramp))
-    return out
+        if orange.any(axis=0).sum() > 4:
+            return i
+    return None
+
+
+def today_frames(n: int, fps: int, frames: list) -> int:
+    """How many opening frames show the site as it is today (sequence.plan, no Earth flight:
+    30% of the lead-in), never past the start of the build."""
+    lead = min(15.0, max(3.3, n / fps * 0.3))
+    today = int(fps * lead * 0.30)
+    start = build_start(frames)
+    return min(today, start if start is not None else today, 72)
 
 
 BAND = 132 / 1080      # the caption band at the foot of our frames (render.caption), share of height
@@ -170,7 +174,9 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     # (each run must be 81 long) and the extra is cut off at the end
     runs = 1 if n <= keep else 1 + -(-(n - keep) // stride)
     frames = frames + [frames[-1]] * (stride * (runs - 1) + 81 - n)
-    near_at = building_mix(frames[:n], near) + [near] * (len(frames) - n)
+    # the site as it is today is Google's own photographed mesh: kept exactly as it is (the AI
+    # carries on from it), so today's site stays the real one
+    today = today_frames(n, fps, frames[:n])
 
     depth_model = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf",
                            device="cuda")
@@ -183,7 +189,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
         if control == "mix":
             grey = np.asarray(f.convert("L").resize((d.shape[1], d.shape[0])), dtype=np.float32)
-            far = d < (1.0 - near_at[i]) * 255            # depth-anything: bigger is nearer
+            far = d < (1.0 - near) * 255                  # depth-anything: bigger is nearer
             d = np.where(far, grey, d)
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
@@ -194,8 +200,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     pipe = WanVACEPipeline.from_pretrained(MODEL, vae=vae, torch_dtype=torch.bfloat16)
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=3.0)
     pipe.to("cuda")
-    if width * height > 832 * 480:
-        pipe.vae.enable_tiling()                       # 720p: decode the video in tiles
+    # (no tiled decoding: at 720p its tiles came out in different brightness, a dark box over
+    # the site; an H100 decodes 81 frames of 720p whole)
     models.commit()
 
     def to_pil(a):
@@ -210,6 +216,9 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     for r in range(runs):
         part = list(depth[r * stride:r * stride + 81])
         mask = [white] * len(part)
+        if r == 0 and today:
+            part[:today] = frames[:today]
+            mask[:today] = [black] * today
         if r:
             held = [to_pil(f) for f in out_frames[-overlap:]]
             part[:overlap] = held
@@ -241,8 +250,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
 @app.local_entrypoint()
 def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, steps: int = 30,
-         scale: float = 1.3, control: str = "mix", grade: float = 0.7, width: int = 1280,
-         height: int = 720):
+         scale: float = 1.3, control: str = "mix", grade: float = 0.7, width: int = 832,
+         height: int = 480):
     got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale,
                          control=control, grade=grade, width=width, height=height)
     Path(out).write_bytes(got.pop("real"))
