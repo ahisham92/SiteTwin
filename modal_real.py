@@ -86,10 +86,11 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
 
 
 def structure(d, near: float):
-    """Where the render's own flat ground is put back over the AI's: the nearest ``near`` share
-    of the frame (which the AI draws from depth), outside the site and away from anything that
-    stands up. Depth says nothing about a flat road or pavement, so the AI invented a surface
-    there (a striped ramp round the site); our render has the real kerb, pavement and road."""
+    """Where our render's own picture is laid back over the AI's: everywhere except what stands
+    up in the near ``near`` share of the frame (the building, crane, hoarding, cabins, people:
+    depth changes fast there). Depth says nothing about flat ground, so the AI invented
+    surfaces on it (a striped ramp round the site, white lumps on the park, a snowy city); our
+    render has the real kerb, pavement, road, soil and Google's photographed city."""
     import numpy as np
     from PIL import Image, ImageFilter
     d = d.astype(np.float32)
@@ -101,18 +102,8 @@ def structure(d, near: float):
     # its own row stands up out of it
     ground = np.percentile(d, 40, axis=1, keepdims=True)
     standing = (grown | (d > ground + 12.0)) & near_part
-    # the site: one solid block round everything standing (the build inside its hoarding)
-    rows = np.zeros_like(standing)
-    cols = np.zeros_like(standing)
-    for i in np.flatnonzero(standing.any(axis=1)):
-        j = np.flatnonzero(standing[i])
-        rows[i, j[0]:j[-1] + 1] = True
-    for j in np.flatnonzero(standing.any(axis=0)):
-        i = np.flatnonzero(standing[:, j])
-        cols[i[0]:i[-1] + 1, j] = True
-    site = rows | (cols & rows.any(axis=1, keepdims=True))
-    site = np.asarray(Image.fromarray((site * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(21))) > 0
-    return near_part & ~site & ~standing
+    standing = np.asarray(Image.fromarray((standing * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(9))) > 0
+    return ~standing
 
 
 def keep_render(ai, src, where):
@@ -294,7 +285,10 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     if grade > 0:
         out_frames = [regrade(f, frames[i], grade, radius=24.0 * width / 832) for i, f in enumerate(out_frames)]
     if keep_colour:
-        out_frames = [true_colour(f, frames[i], keep_colour[i]) for i, f in enumerate(out_frames)]
+        # the colours everywhere are our render's (grey concrete, yellow crane, green hoarding,
+        # Google's photos); the AI gives the light and the detail
+        everywhere = Image.new("L", (width, height), 255)
+        out_frames = [true_colour(f, frames[i], everywhere) for i, f in enumerate(out_frames)]
     if flat:
         out_frames = [keep_render(f, frames[i], flat[i]) for i, f in enumerate(out_frames)]
     import subprocess
