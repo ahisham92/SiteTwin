@@ -85,6 +85,41 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
     return [Image.open(p).convert("RGB") for p in sorted(out.glob("f*.png"))]
 
 
+def structure(d, near: float):
+    """Where the AI is guided by depth: the nearest ``near`` share of the frame, and there only
+    where something stands up (the building, crane, plant, cabins: depth changes fast). Flat
+    ground, even close by, is guided by our render's own picture instead, so the AI follows the
+    real road, kerb and pavement rather than inventing a surface (it drew a striped ramp)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    d = d.astype(np.float32)
+    gy, gx = np.gradient(d)
+    edge = np.hypot(gx, gy) > 4.0
+    grown = np.asarray(Image.fromarray((edge * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(15))) > 0
+    # the ground's depth runs smoothly down the frame: anything clearly nearer than the ground of
+    # its own row stands up out of it
+    ground = np.percentile(d, 40, axis=1, keepdims=True)
+    standing = d > ground + 12.0
+    return (grown | standing) & (d >= (1.0 - near) * 255)  # depth-anything: bigger is nearer
+
+
+def true_colour(ai, src, where):
+    """Where the AI only coloured our picture (``where`` white), its colours are swapped for the
+    real ones in our render (Google's photos), keeping the AI's light and detail: no invented
+    colours (a yellow tree that looked like a second crane)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    a = np.asarray(ai)
+    a = (np.clip(a, 0, 1) * 255).astype(np.uint8) if a.dtype != np.uint8 else a
+    A = np.asarray(Image.fromarray(a).convert("YCbCr"), np.float32)
+    S = np.asarray(src.resize((a.shape[1], a.shape[0])).convert("YCbCr"), np.float32)
+    m = np.asarray(where.resize((a.shape[1], a.shape[0])).filter(ImageFilter.GaussianBlur(4)),
+                   np.float32)[..., None] / 255.0
+    A[..., 1:] = A[..., 1:] * (1 - m) + S[..., 1:] * m
+    out = Image.fromarray(np.clip(A, 0, 255).astype(np.uint8), "YCbCr").convert("RGB")
+    return np.asarray(out, np.float32) / 255.0
+
+
 def build_start(frames: list) -> int | None:
     """The first frame of the build, read off the caption's orange progress bar (render.caption)."""
     import numpy as np
@@ -180,7 +215,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
     depth_model = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf",
                            device="cuda")
-    depth = []
+    depth, keep_colour = [], []
     for i, f in enumerate(frames):
         d = np.array(depth_model(f)["depth"], dtype=np.float32)
         # spread the values evenly (histogram equalisation), so the far streets and buildings,
@@ -189,8 +224,9 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
         if control == "mix":
             grey = np.asarray(f.convert("L").resize((d.shape[1], d.shape[0])), dtype=np.float32)
-            far = d < (1.0 - near) * 255                  # depth-anything: bigger is nearer
-            d = np.where(far, grey, d)
+            use = structure(d, near)
+            d = np.where(use, d, grey)
+            keep_colour.append(Image.fromarray(((~use) * 255).astype(np.uint8)).resize((width, height)))
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
     torch.cuda.empty_cache()
@@ -232,6 +268,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     frames = frames[:n]
     if grade > 0:
         out_frames = [regrade(f, frames[i], grade, radius=24.0 * width / 832) for i, f in enumerate(out_frames)]
+    if keep_colour:
+        out_frames = [true_colour(f, frames[i], keep_colour[i]) for i, f in enumerate(out_frames)]
     import subprocess
     low = work / "low.mp4"
     export_to_video(out_frames, str(low), fps=fps)
