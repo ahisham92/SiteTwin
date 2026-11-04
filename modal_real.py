@@ -31,7 +31,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
     .pip_install("torch==2.7.1", "diffusers==0.35.1", "transformers==4.53.3", "accelerate==1.9.0",
-                 "ftfy", "sentencepiece", "imageio[ffmpeg]", "numpy<2.3", "pillow")
+                 "ftfy", "sentencepiece", "imageio[ffmpeg]", "numpy<2.3", "pillow", "scipy")
     .env({"HF_HOME": "/models/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0"})
 )
 
@@ -83,6 +83,86 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(path), "-t", str(seconds),
                     "-vf", vf, str(out / "f%05d.png")], check=True)
     return [Image.open(p).convert("RGB") for p in sorted(out.glob("f*.png"))]
+
+
+def structure(d, near: float):
+    """Where our render's own picture is laid back over the AI's: everywhere except what stands
+    up in the near ``near`` share of the frame (the building, crane, hoarding, cabins, people:
+    depth changes fast there). Depth says nothing about flat ground, so the AI invented
+    surfaces on it (a striped ramp round the site, white lumps on the park, a snowy city); our
+    render has the real kerb, pavement, road, soil and Google's photographed city."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    d = d.astype(np.float32)
+    near_part = d >= (1.0 - near) * 255   # bigger is nearer
+    gy, gx = np.gradient(d)
+    edge = np.hypot(gx, gy) > 4.0
+    grown = np.asarray(Image.fromarray((edge * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(15))) > 0
+    # the ground's depth runs smoothly down the frame: anything clearly nearer than the ground of
+    # its own row stands up out of it
+    ground = np.percentile(d, 40, axis=1, keepdims=True)
+    standing = (grown | (d > ground + 12.0)) & near_part
+    standing = np.asarray(Image.fromarray((standing * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(9))) > 0
+    # only the site: the biggest standing piece (the hoarding round the build) and what lies
+    # inside its outline; Google's lumpy trees on the park nearby came out as white lumps
+    standing &= site_outline(standing)
+    return ~standing
+
+
+def site_outline(standing):
+    """The filled convex outline of the biggest connected piece of ``standing``."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from scipy import ndimage
+    labels, count = ndimage.label(standing)
+    if not count:
+        return standing
+    sizes = ndimage.sum(standing, labels, range(1, count + 1))
+    ys, xs = np.nonzero(labels == 1 + int(np.argmax(sizes)))
+    pts = sorted(set(zip(xs.tolist(), ys.tolist())))
+
+    def half(points):
+        out = []
+        for p in points:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out
+    hull = half(pts)[:-1] + half(pts[::-1])[:-1]
+    img = Image.new("L", (standing.shape[1], standing.shape[0]), 0)
+    if len(hull) >= 3:
+        ImageDraw.Draw(img).polygon(hull, fill=255, outline=255)
+    return np.asarray(img) > 0
+
+
+def keep_render(ai, src, where):
+    """Our render's own picture laid back over the AI's where ``where`` is white (soft edge)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    a = np.asarray(ai, np.float32)
+    a = a / 255.0 if a.max() > 1.5 else a
+    s = np.asarray(src.resize((a.shape[1], a.shape[0])), np.float32) / 255.0
+    m = np.asarray(where.resize((a.shape[1], a.shape[0])).filter(ImageFilter.GaussianBlur(6)),
+                   np.float32)[..., None] / 255.0
+    return (a * (1 - m) + s * m).astype(np.float32)
+
+
+def true_colour(ai, src, where):
+    """Where the AI only coloured our picture (``where`` white), its colours are swapped for the
+    real ones in our render (Google's photos), keeping the AI's light and detail: no invented
+    colours (a yellow tree that looked like a second crane)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    a = np.asarray(ai)
+    a = (np.clip(a, 0, 1) * 255).astype(np.uint8) if a.dtype != np.uint8 else a
+    A = np.asarray(Image.fromarray(a).convert("YCbCr"), np.float32)
+    S = np.asarray(src.resize((a.shape[1], a.shape[0])).convert("YCbCr"), np.float32)
+    m = np.asarray(where.resize((a.shape[1], a.shape[0])).filter(ImageFilter.GaussianBlur(4)),
+                   np.float32)[..., None] / 255.0
+    A[..., 1:] = A[..., 1:] * (1 - m) + S[..., 1:] * m
+    out = Image.fromarray(np.clip(A, 0, 255).astype(np.uint8), "YCbCr").convert("RGB")
+    return np.asarray(out, np.float32) / 255.0
 
 
 def build_start(frames: list) -> int | None:
@@ -180,7 +260,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
     depth_model = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf",
                            device="cuda")
-    depth = []
+    depth, keep_colour, flat = [], [], []
     for i, f in enumerate(frames):
         d = np.array(depth_model(f)["depth"], dtype=np.float32)
         # spread the values evenly (histogram equalisation), so the far streets and buildings,
@@ -189,8 +269,10 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
         if control == "mix":
             grey = np.asarray(f.convert("L").resize((d.shape[1], d.shape[0])), dtype=np.float32)
-            far = d < (1.0 - near) * 255                  # depth-anything: bigger is nearer
-            d = np.where(far, grey, d)
+            use = d >= (1.0 - near) * 255   # bigger is nearer
+            flat.append(Image.fromarray((structure(d, near) * 255).astype(np.uint8)).resize((width, height)))
+            d = np.where(use, d, grey)
+            keep_colour.append(Image.fromarray(((~use) * 255).astype(np.uint8)).resize((width, height)))
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
     del depth_model
     torch.cuda.empty_cache()
@@ -232,6 +314,13 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     frames = frames[:n]
     if grade > 0:
         out_frames = [regrade(f, frames[i], grade, radius=24.0 * width / 832) for i, f in enumerate(out_frames)]
+    if keep_colour:
+        # the colours everywhere are our render's (grey concrete, yellow crane, green hoarding,
+        # Google's photos); the AI gives the light and the detail
+        everywhere = Image.new("L", (width, height), 255)
+        out_frames = [true_colour(f, frames[i], everywhere) for i, f in enumerate(out_frames)]
+    if flat:
+        out_frames = [keep_render(f, frames[i], flat[i]) for i, f in enumerate(out_frames)]
     import subprocess
     low = work / "low.mp4"
     export_to_video(out_frames, str(low), fps=fps)
