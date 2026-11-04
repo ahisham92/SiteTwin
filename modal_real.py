@@ -99,8 +99,19 @@ def structure(d, near: float):
     # the ground's depth runs smoothly down the frame: anything clearly nearer than the ground of
     # its own row stands up out of it
     ground = np.percentile(d, 40, axis=1, keepdims=True)
-    standing = d > ground + 12.0
-    return (grown | standing) & (d >= (1.0 - near) * 255)  # depth-anything: bigger is nearer
+    standing = (grown | (d > ground + 12.0)) & (d >= (1.0 - near) * 255)   # bigger is nearer
+    # one solid block round all of it (the site inside its hoarding): depth patches scattered in
+    # a grey frame were read as pictures and came out as white blobs
+    rows = np.zeros_like(standing)
+    cols = np.zeros_like(standing)
+    for i in np.flatnonzero(standing.any(axis=1)):
+        j = np.flatnonzero(standing[i])
+        rows[i, j[0]:j[-1] + 1] = True
+    for j in np.flatnonzero(standing.any(axis=0)):
+        i = np.flatnonzero(standing[:, j])
+        cols[i[0]:i[-1] + 1, j] = True
+    block = rows | (cols & rows.any(axis=1, keepdims=True))
+    return np.asarray(Image.fromarray((block * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(9))) > 0
 
 
 def true_colour(ai, src, where):
