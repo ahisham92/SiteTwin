@@ -86,22 +86,22 @@ def _frames(path: Path, fps: int, width: int, height: int, seconds: float):
 
 
 def structure(d, near: float):
-    """Where the AI is guided by depth: the nearest ``near`` share of the frame, and there only
-    where something stands up (the building, crane, plant, cabins: depth changes fast). Flat
-    ground, even close by, is guided by our render's own picture instead, so the AI follows the
-    real road, kerb and pavement rather than inventing a surface (it drew a striped ramp)."""
+    """Where the render's own flat ground is put back over the AI's: the nearest ``near`` share
+    of the frame (which the AI draws from depth), outside the site and away from anything that
+    stands up. Depth says nothing about a flat road or pavement, so the AI invented a surface
+    there (a striped ramp round the site); our render has the real kerb, pavement and road."""
     import numpy as np
     from PIL import Image, ImageFilter
     d = d.astype(np.float32)
+    near_part = d >= (1.0 - near) * 255   # bigger is nearer
     gy, gx = np.gradient(d)
     edge = np.hypot(gx, gy) > 4.0
     grown = np.asarray(Image.fromarray((edge * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(15))) > 0
     # the ground's depth runs smoothly down the frame: anything clearly nearer than the ground of
     # its own row stands up out of it
     ground = np.percentile(d, 40, axis=1, keepdims=True)
-    standing = (grown | (d > ground + 12.0)) & (d >= (1.0 - near) * 255)   # bigger is nearer
-    # one solid block round all of it (the site inside its hoarding): depth patches scattered in
-    # a grey frame were read as pictures and came out as white blobs
+    standing = (grown | (d > ground + 12.0)) & near_part
+    # the site: one solid block round everything standing (the build inside its hoarding)
     rows = np.zeros_like(standing)
     cols = np.zeros_like(standing)
     for i in np.flatnonzero(standing.any(axis=1)):
@@ -110,8 +110,21 @@ def structure(d, near: float):
     for j in np.flatnonzero(standing.any(axis=0)):
         i = np.flatnonzero(standing[:, j])
         cols[i[0]:i[-1] + 1, j] = True
-    block = rows | (cols & rows.any(axis=1, keepdims=True))
-    return np.asarray(Image.fromarray((block * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(9))) > 0
+    site = rows | (cols & rows.any(axis=1, keepdims=True))
+    site = np.asarray(Image.fromarray((site * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(21))) > 0
+    return near_part & ~site & ~standing
+
+
+def keep_render(ai, src, where):
+    """Our render's own picture laid back over the AI's where ``where`` is white (soft edge)."""
+    import numpy as np
+    from PIL import Image, ImageFilter
+    a = np.asarray(ai, np.float32)
+    a = a / 255.0 if a.max() > 1.5 else a
+    s = np.asarray(src.resize((a.shape[1], a.shape[0])), np.float32) / 255.0
+    m = np.asarray(where.resize((a.shape[1], a.shape[0])).filter(ImageFilter.GaussianBlur(6)),
+                   np.float32)[..., None] / 255.0
+    return (a * (1 - m) + s * m).astype(np.float32)
 
 
 def true_colour(ai, src, where):
@@ -226,7 +239,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
     depth_model = pipeline("depth-estimation", model="depth-anything/Depth-Anything-V2-Large-hf",
                            device="cuda")
-    depth, keep_colour = [], []
+    depth, keep_colour, flat = [], [], []
     for i, f in enumerate(frames):
         d = np.array(depth_model(f)["depth"], dtype=np.float32)
         # spread the values evenly (histogram equalisation), so the far streets and buildings,
@@ -235,7 +248,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         d = (ranks / max(1, ranks.size - 1) * 255).reshape(d.shape)
         if control == "mix":
             grey = np.asarray(f.convert("L").resize((d.shape[1], d.shape[0])), dtype=np.float32)
-            use = structure(d, near)
+            use = d >= (1.0 - near) * 255   # bigger is nearer
+            flat.append(Image.fromarray((structure(d, near) * 255).astype(np.uint8)).resize((width, height)))
             d = np.where(use, d, grey)
             keep_colour.append(Image.fromarray(((~use) * 255).astype(np.uint8)).resize((width, height)))
         depth.append(Image.fromarray(d.astype(np.uint8)).convert("RGB").resize((width, height)))
@@ -281,6 +295,8 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
         out_frames = [regrade(f, frames[i], grade, radius=24.0 * width / 832) for i, f in enumerate(out_frames)]
     if keep_colour:
         out_frames = [true_colour(f, frames[i], keep_colour[i]) for i, f in enumerate(out_frames)]
+    if flat:
+        out_frames = [keep_render(f, frames[i], flat[i]) for i, f in enumerate(out_frames)]
     import subprocess
     low = work / "low.mp4"
     export_to_video(out_frames, str(low), fps=fps)
