@@ -31,7 +31,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
     .pip_install("torch==2.7.1", "diffusers==0.35.1", "transformers==4.53.3", "accelerate==1.9.0",
-                 "ftfy", "sentencepiece", "imageio[ffmpeg]", "numpy<2.3", "pillow")
+                 "ftfy", "sentencepiece", "imageio[ffmpeg]", "numpy<2.3", "pillow", "scipy")
     .env({"HF_HOME": "/models/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0"})
 )
 
@@ -103,7 +103,37 @@ def structure(d, near: float):
     ground = np.percentile(d, 40, axis=1, keepdims=True)
     standing = (grown | (d > ground + 12.0)) & near_part
     standing = np.asarray(Image.fromarray((standing * 255).astype(np.uint8)).filter(ImageFilter.MaxFilter(9))) > 0
+    # only the site: the biggest standing piece (the hoarding round the build) and what lies
+    # inside its outline; Google's lumpy trees on the park nearby came out as white lumps
+    standing &= site_outline(standing)
     return ~standing
+
+
+def site_outline(standing):
+    """The filled convex outline of the biggest connected piece of ``standing``."""
+    import numpy as np
+    from PIL import Image, ImageDraw
+    from scipy import ndimage
+    labels, count = ndimage.label(standing)
+    if not count:
+        return standing
+    sizes = ndimage.sum(standing, labels, range(1, count + 1))
+    ys, xs = np.nonzero(labels == 1 + int(np.argmax(sizes)))
+    pts = sorted(set(zip(xs.tolist(), ys.tolist())))
+
+    def half(points):
+        out = []
+        for p in points:
+            while len(out) >= 2 and ((out[-1][0] - out[-2][0]) * (p[1] - out[-2][1])
+                                     - (out[-1][1] - out[-2][1]) * (p[0] - out[-2][0])) <= 0:
+                out.pop()
+            out.append(p)
+        return out
+    hull = half(pts)[:-1] + half(pts[::-1])[:-1]
+    img = Image.new("L", (standing.shape[1], standing.shape[0]), 0)
+    if len(hull) >= 3:
+        ImageDraw.Draw(img).polygon(hull, fill=255, outline=255)
+    return np.asarray(img) > 0
 
 
 def keep_render(ai, src, where):
