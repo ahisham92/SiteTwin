@@ -31,7 +31,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg")
     .pip_install("torch==2.7.1", "diffusers==0.35.1", "transformers==4.53.3", "accelerate==1.9.0",
-                 "ftfy", "sentencepiece", "imageio[ffmpeg]", "numpy<2.3", "pillow", "scipy")
+                 "ftfy", "sentencepiece", "peft==0.17.0", "imageio[ffmpeg]", "numpy<2.3", "pillow", "scipy")
     .env({"HF_HOME": "/models/hf", "HF_HUB_ENABLE_HF_TRANSFER": "0"})
 )
 
@@ -55,6 +55,29 @@ NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic
 FULL, KEEP, OVERLAP = 81, 73, 9
 #: What an hour of each GPU costs on Modal, in US dollars (to report what a pass cost).
 PRICE_PER_HOUR = {"L40S": 1.95, "A100-80GB": 2.50, "H100": 3.95, "H200": 4.54, "B200": 6.25}
+
+
+#: The fast sampler (``fast=True``): a step- and guidance-distilled LoRA for Wan2.1 14B
+#: (lightx2v, Apache 2.0), found in this repository of Wan LoRAs, and its flow shift.
+#: Off by default: tried 2026-11-14 at 6 steps on the Beirut sample it cost $0.034 a second
+#: instead of $0.113, but it filled the open concrete frame in as a solid white block (the
+#: columns and floors were lost), so it does not keep our realism.
+FAST_REPO = os.environ.get("SITETWIN_FAST_REPO", "Kijai/WanVideo_comfy")
+FAST_SHIFT = 5.0
+
+
+def fast_lora() -> tuple[str, str]:
+    """(repo, file) of the distilled LoRA: the lightx2v text-to-video 14B one, preferring the
+    newest (highest version, highest rank) if several are there."""
+    from huggingface_hub import list_repo_files
+    files = [f for f in list_repo_files(FAST_REPO) if f.endswith(".safetensors")]
+    pick = [f for f in files if "lightx2v" in f.lower() and "t2v" in f.lower() and "14b" in f.lower()
+            and "lora" in f.lower() and "cfg" in f.lower()]
+    if not pick:
+        raise RuntimeError(f"No lightx2v T2V 14B LoRA in {FAST_REPO}: {files[:40]}")
+    pick.sort(key=lambda f: ("v2" in f.lower(), "rank64" in f.lower(), f))
+    print("fast sampler LoRA:", pick[-1])
+    return FAST_REPO, pick[-1]
 
 
 def plan_runs(n: int) -> list[tuple[int, int]]:
@@ -247,7 +270,7 @@ def _finish(src: Path, ai_frames: list, fps: int, width: int, height: int, secon
 @app.function(image=image, gpu=GPU, volumes={"/models": models}, timeout=3 * 3600)
 def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int = 30,
             width: int = 832, height: int = 480, scale: float = 1.0, seed: int = 7,
-            control: str = "depth", near: float = 0.6, grade: float = 0.7) -> dict:
+            control: str = "depth", near: float = 0.6, grade: float = 0.7, fast: bool = False) -> dict:
     """``control``: "depth" guides by depth alone; "mix" guides the near part (the nearest
     ``near`` share of each frame) by depth and the rest by our render in grey, so the AI keeps
     the real streets and blocks round the site (it colours them) instead of inventing new ones."""
@@ -302,7 +325,15 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 
     vae = AutoencoderKLWan.from_pretrained(MODEL, subfolder="vae", torch_dtype=torch.float32)
     pipe = WanVACEPipeline.from_pretrained(MODEL, vae=vae, torch_dtype=torch.bfloat16)
-    pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=3.0)
+    pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config, flow_shift=FAST_SHIFT if fast else 3.0)
+    guidance = 5.0
+    if fast:
+        # a step- and guidance-distilled LoRA for Wan2.1 14B: a few steps and one model pass a
+        # step (no negative-prompt pass) instead of 30 steps of two passes each
+        repo, name = fast_lora()
+        pipe.load_lora_weights(repo, weight_name=name, adapter_name="fast")
+        pipe.set_adapters(["fast"], adapter_weights=[1.0])
+        guidance = 1.0
     pipe.to("cuda")
     # (no tiled decoding: at 720p its tiles came out in different brightness, a dark box over
     # the site; an H100 decodes 81 frames of 720p whole)
@@ -328,7 +359,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
             part[:OVERLAP] = held
             mask[:OVERLAP] = [black] * OVERLAP
         got = pipe(video=part, mask=mask, prompt=prompt, negative_prompt=NEGATIVE, height=height,
-                   width=width, num_frames=len(part), num_inference_steps=steps, guidance_scale=5.0,
+                   width=width, num_frames=len(part), num_inference_steps=steps, guidance_scale=guidance,
                    conditioning_scale=scale, generator=torch.Generator().manual_seed(seed)).frames[0]
         got = list(got)[:KEEP]
         out_frames.extend(got if r == 0 else got[OVERLAP:])
@@ -356,7 +387,7 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
                     "-filter_complex", "hstack", "-c:v", "libx264", "-crf", "18", str(side)], check=True)
     return {"real": real.read_bytes(), "side": side.read_bytes(), "frames": len(out_frames),
             "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL,
-            "control": control, "frames_generated": sum(length for _, length in runs),
+            "control": control, "fast": fast, "steps": steps, "frames_generated": sum(length for _, length in runs),
             "cost": round((time.time() - t0) / 3600 * PRICE_PER_HOUR.get(GPU, 4.0), 2),
             "cost_per_second": round((time.time() - t0) / 3600 * PRICE_PER_HOUR.get(GPU, 4.0) * fps / max(1, n), 3)}
 
@@ -364,9 +395,9 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
 @app.local_entrypoint()
 def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, steps: int = 30,
          scale: float = 1.3, control: str = "mix", grade: float = 0.7, width: int = 832,
-         height: int = 480):
+         height: int = 480, fast: bool = False):
     got = realify.remote(Path(src).read_bytes(), seconds=seconds, steps=steps, scale=scale,
-                         control=control, grade=grade, width=width, height=height)
+                         control=control, grade=grade, width=width, height=height, fast=fast)
     Path(out).write_bytes(got.pop("real"))
     Path(out).with_name(Path(out).stem + "-side.mp4").write_bytes(got.pop("side"))
     print(f"Written {out}: {got}")
