@@ -59,6 +59,9 @@ PRICE_PER_HOUR = {"L40S": 1.95, "A100-80GB": 2.50, "H100": 3.95, "H200": 4.54, "
 
 #: The fast sampler (``fast=True``): a step- and guidance-distilled LoRA for Wan2.1 14B
 #: (lightx2v, Apache 2.0), found in this repository of Wan LoRAs, and its flow shift.
+#: Off by default: tried 2026-11-14 at 6 steps on the Beirut sample it cost $0.034 a second
+#: instead of $0.113, but it filled the open concrete frame in as a solid white block (the
+#: columns and floors were lost), so it does not keep our realism.
 FAST_REPO = os.environ.get("SITETWIN_FAST_REPO", "Kijai/WanVideo_comfy")
 FAST_SHIFT = 5.0
 
