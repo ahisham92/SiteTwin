@@ -51,6 +51,30 @@ NEGATIVE = ("cartoon, CG, 3D render, video game, illustration, painting, plastic
             "garbled text, captions")
 
 
+#: Frames each AI run makes at most, keeps (the rest wash out) and shares with the next run.
+FULL, KEEP, OVERLAP = 81, 73, 9
+#: What an hour of each GPU costs on Modal, in US dollars (to report what a pass cost).
+PRICE_PER_HOUR = {"L40S": 1.95, "A100-80GB": 2.50, "H100": 3.95, "H200": 4.54, "B200": 6.25}
+
+
+def plan_runs(n: int) -> list[tuple[int, int]]:
+    """(first frame, length) of each AI run for a film of ``n`` frames. Every run but the last
+    makes 81 and keeps 73; each starts 9 frames before the last one ended. The last run makes
+    only what it needs plus the 8 frames that wash out at the end of any run, rounded up to
+    the 4k+1 lengths Wan works in."""
+    stride = KEEP - OVERLAP
+    count = 1 if n <= KEEP else 1 + -(-(n - KEEP) // stride)
+    out = []
+    for r in range(count):
+        start = r * stride
+        if r < count - 1:
+            out.append((start, FULL))
+        else:
+            need = n - start + (FULL - KEEP)
+            out.append((start, min(FULL, 4 * -(-(need - 1) // 4) + 1)))
+    return out
+
+
 def regrade(ai, src, strength: float = 0.7, radius: float = 24.0):
     """Our render's real colours (Google's photos, our materials) laid back under the AI's
     detail: each pixel of the AI frame is scaled by how far its blurred colour is from the
@@ -245,15 +269,13 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     fps = 16
     frames = _frames(src, fps, width, height, seconds)
     n = len(frames)
-    # Each run makes 81 frames; its last few wash out, so only the first 73 are kept. The next run
-    # starts 9 frames back and is handed those 9 finished frames as they are (masked out), so it
-    # carries straight on from them: no jump in the look where two runs meet.
-    keep, overlap = 73, 9
-    stride = keep - overlap
-    # enough runs for every frame; the last run is filled out with copies of the last frame
-    # (each run must be 81 long) and the extra is cut off at the end
-    runs = 1 if n <= keep else 1 + -(-(n - keep) // stride)
-    frames = frames + [frames[-1]] * (stride * (runs - 1) + 81 - n)
+    # Each run makes up to 81 frames; its last few wash out, so only the first 73 are kept. The
+    # next run starts 9 frames back and is handed those 9 finished frames as they are (masked
+    # out), so it carries straight on from them: no jump in the look where two runs meet. The
+    # last run is only as long as it needs to be (it used to be padded to 81 with copies of the
+    # last frame, a third of a 10 s film's GPU time spent on frames that were thrown away).
+    runs = plan_runs(n)
+    frames = frames + [frames[-1]] * (runs[-1][0] + runs[-1][1] - n)
     # the site as it is today is Google's own photographed mesh: kept exactly as it is (the AI
     # carries on from it), so today's site stays the real one
     today = today_frames(n, fps, frames[:n])
@@ -295,21 +317,21 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
     white = Image.new("L", (width, height), 255)
     black = Image.new("L", (width, height), 0)
     out_frames = []
-    for r in range(runs):
-        part = list(depth[r * stride:r * stride + 81])
+    for r, (start, length) in enumerate(runs):
+        part = list(depth[start:start + length])
         mask = [white] * len(part)
         if r == 0 and today:
             part[:today] = frames[:today]
             mask[:today] = [black] * today
         if r:
-            held = [to_pil(f) for f in out_frames[-overlap:]]
-            part[:overlap] = held
-            mask[:overlap] = [black] * overlap
+            held = [to_pil(f) for f in out_frames[-OVERLAP:]]
+            part[:OVERLAP] = held
+            mask[:OVERLAP] = [black] * OVERLAP
         got = pipe(video=part, mask=mask, prompt=prompt, negative_prompt=NEGATIVE, height=height,
                    width=width, num_frames=len(part), num_inference_steps=steps, guidance_scale=5.0,
                    conditioning_scale=scale, generator=torch.Generator().manual_seed(seed)).frames[0]
-        got = list(got)[:keep]
-        out_frames.extend(got if r == 0 else got[overlap:])
+        got = list(got)[:KEEP]
+        out_frames.extend(got if r == 0 else got[OVERLAP:])
     out_frames = out_frames[:n]
     frames = frames[:n]
     if grade > 0:
@@ -334,7 +356,9 @@ def realify(film: bytes, seconds: float = 5.0, prompt: str = PROMPT, steps: int 
                     "-filter_complex", "hstack", "-c:v", "libx264", "-crf", "18", str(side)], check=True)
     return {"real": real.read_bytes(), "side": side.read_bytes(), "frames": len(out_frames),
             "seconds": time.time() - t0, "depth_seconds": t_depth, "gpu": GPU, "model": MODEL,
-            "control": control}
+            "control": control, "frames_generated": sum(length for _, length in runs),
+            "cost": round((time.time() - t0) / 3600 * PRICE_PER_HOUR.get(GPU, 4.0), 2),
+            "cost_per_second": round((time.time() - t0) / 3600 * PRICE_PER_HOUR.get(GPU, 4.0) * fps / max(1, n), 3)}
 
 
 @app.local_entrypoint()
@@ -346,3 +370,4 @@ def main(src: str = "film.mp4", out: str = "real.mp4", seconds: float = 5.0, ste
     Path(out).write_bytes(got.pop("real"))
     Path(out).with_name(Path(out).stem + "-side.mp4").write_bytes(got.pop("side"))
     print(f"Written {out}: {got}")
+    print(f"AI pass: ${got['cost']:.2f} on {got['gpu']}, about ${got['cost_per_second']:.3f} a second of film")
