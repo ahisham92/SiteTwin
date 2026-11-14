@@ -10,7 +10,7 @@ on:
       lon: {description: "Longitude", default: "35.5018"}
       seconds: {description: "Length in seconds", default: "10"}
       earth: {description: "Open with the flight from space (yes or no)", default: "no"}
-      quality: {description: "preview, draft, final or 4k", default: "draft"}
+      quality: {description: "preview, draft, final, 4k, or ai (16 fps for the AI pass: half the GPU time of draft)", default: "draft"}
       ifc: {description: "IFC in the repository", default: "samples/sample-building.ifc"}
 
 jobs:

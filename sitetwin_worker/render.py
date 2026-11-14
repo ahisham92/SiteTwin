@@ -30,6 +30,9 @@ QUALITY = {
     "draft": dict(width=1280, height=720, samples=32, fps=30),
     "final": dict(width=1920, height=1080, samples=128, fps=30),
     "4k": dict(width=3840, height=2160, samples=192, fps=30),
+    # for a film that goes on to our AI pass (modal_real.py): the AI works at 16 frames a second
+    # and 832 x 480, so 30 fps would render 14 of every 30 frames only to throw them away
+    "ai": dict(width=1280, height=720, samples=32, fps=16),
 }
 
 
