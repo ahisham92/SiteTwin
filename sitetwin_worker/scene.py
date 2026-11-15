@@ -306,10 +306,13 @@ def build_site(g: Ground, pit: tuple[float, float, float, float], depth: float, 
 def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
                  keep_out: tuple[float, float, float, float],
                  access: tuple[tuple[float, float], tuple[float, float]] | None = None,
-                 existing: list | None = None, flat: float = 0.0) -> tuple[float, float] | None:
+                 existing: list | None = None, flat: float = 0.0,
+                 cut_above: float | None = None) -> tuple[float, float] | None:
     """Google's photo-real surroundings: the detailed tiles round the site and the coarse ring out
     to the horizon, the site itself cut out (it is rebuilt by the sequence), and everything
-    lowered so the ground round the site meets the site's level. The ground just outside the
+    lowered so the ground round the site meets the site's level. With ``cut_above`` (a site at
+    sea), only what stands more than that above the level is cut out of the site (the old deck),
+    so the sea's own surface stays and there is no seam. The ground just outside the
     hoarding, and the access road out of the gate (``access``: gate point, outward direction),
     are graded to the site's level, as a real site's are. Returns (how far it was lowered, the
     lowest ground left), or None if there are none."""
@@ -361,6 +364,8 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
 
     def graded(x: float, y: float, z: float) -> float:
         """z (already lowered) with the grading round the site and along the access road."""
+        if cut_above is not None:                           # at sea: the shore and the sea stay as they are
+            return z
         w = 0.0
         if abs(z) < 4.0:                                    # ground, not roofs
             d = from_site(x, y)
@@ -381,6 +386,8 @@ def build_google(g: Ground, manifest: dict[str, Any], folder: Path,
     graded_objs = manifest.setdefault("_graded", [])
     def inside(f) -> bool:
         c = f.calc_center_median()
+        if cut_above is not None and max(v.co.z for v in f.verts) - level < cut_above:
+            return False
         return (kx0 <= c.x <= kx1 and ky0 <= c.y <= ky1) or any(
             kx0 <= v.co.x <= kx1 and ky0 <= v.co.y <= ky1 for v in f.verts)
 

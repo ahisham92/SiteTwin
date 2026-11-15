@@ -65,6 +65,8 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str], start: d
         line = "The site as it is today"
     elif clear_end and frame < clear_end:
         line = "Clearing the site"
+    elif frame < tl.build_start and getattr(tl, "staged", False):
+        line = "As it is today"
     elif frame < tl.build_start:
         line = "Setting up: hoarding, cabins and the tower crane" if clear_end else "The site, cleared and set out"
     elif frame >= tl.build_end:
@@ -141,6 +143,13 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     if not elements:
         raise SystemExit("No geometry could be read from the model.")
     log(f"  {len(elements)} elements")
+    site = model.site_info(model.open_ifc(ifc)) if any(e.stage for e in elements) else {}
+    marine = site.get("setting") == "marine"
+    if marine and site.get("sea_level"):
+        # the model's levels are above chart datum (or the like): mean sea level becomes 0, the
+        # level of the sea in the surroundings
+        for e in elements:
+            e.verts[:, 2] -= float(site["sea_level"])
 
     stage("surroundings")
     log(f"Fetching the surroundings of {lat:.5f}, {lon:.5f} (radius {radius:.0f} m)…")
@@ -165,7 +174,11 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
         log(f"  real models: {', '.join(models)}")
 
     stage("scene")
-    tl = sequence.plan(elements, seconds=seconds, fps=q["fps"], fly_in=fly_in)
+    if any(e.stage for e in elements):
+        # the planner's own stages, carried by the model (tools/stage_ifc.py)
+        tl = sequence.plan_staged(elements, seconds=seconds, fps=q["fps"], stages=site.get("stages"))
+    else:
+        tl = sequence.plan(elements, seconds=seconds, fps=q["fps"], fly_in=fly_in)
     (out / "timeline.json").write_text(json.dumps(tl.as_dict(), indent=1))
     log(f"  {len(tl.steps)} steps, {tl.frames} frames")
     if prepare_only:
@@ -177,7 +190,11 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
         shutil.rmtree(frames_dir)
     frames_dir.mkdir(exist_ok=True)
     opts = scene.Options(width=q["width"], height=q["height"], samples=q["samples"], fps=q["fps"], when=when)
-    info = scene.build(elements, tl, out / "environment", manifest, opts, frames_dir)
+    if marine:
+        from . import marine as marine_scene
+        info = marine_scene.build(elements, tl, out / "environment", manifest, opts, frames_dir)
+    else:
+        info = scene.build(elements, tl, out / "environment", manifest, opts, frames_dir)
     log(f"  scene built: {info}")
 
     import bpy

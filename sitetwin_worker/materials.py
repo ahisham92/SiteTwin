@@ -242,6 +242,12 @@ def get(name: str):
     if name == "concrete":
         # plain cast concrete: an even light grey with faint blotches, no pattern
         _noise_mix(tree, bsdf, (0.38, 0.37, 0.35), (0.45, 0.44, 0.41), scale=0.6, detail=4, rough=(0.8, 0.92), bump=0.04)
+    elif name == "concrete_old":
+        # forty years at sea: weathered grey, darker and greener low down, rust-streaked in places
+        _noise_mix(tree, bsdf, (0.30, 0.30, 0.28), (0.44, 0.43, 0.40), scale=0.9, detail=10, rough=(0.8, 0.95), bump=0.12)
+    elif name == "rock":
+        # armour stone: limestone boulders, light grey-beige with dark gaps
+        _noise_mix(tree, bsdf, (0.20, 0.19, 0.17), (0.52, 0.49, 0.43), scale=1.2, detail=6, rough=(0.85, 1.0), bump=1.2)
     elif name == "concrete_fresh":
         _noise_mix(tree, bsdf, (0.36, 0.36, 0.35), (0.40, 0.40, 0.39), scale=0.8, detail=4, rough=(0.45, 0.7), bump=0.03)
     elif name == "steel":

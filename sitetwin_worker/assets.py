@@ -71,6 +71,8 @@ CATALOG: dict[str, dict[str, Any]] = {
                   "author": "thesidekick", "licence": "CC BY 4.0", "yaw": 180.0, "length": 9.5},
     "flatbed_truck": {"uid": "8ee4c1329219413e879760a25208ee15", "name": "Mercedes Actros com Semi Reboque Prancha",
                       "author": "LuizZed36", "licence": "CC BY 4.0", "yaw": 180.0, "length": 16.5},
+    "crawler_crane": {"uid": "935fab212d504279af8b63b0b6d78030", "name": "Crawler Crane XCMG XGC75",
+                      "author": "8_bit", "licence": "CC BY 4.0", "yaw": 0.0, "height": 40.0},
     "mewp": {"uid": "4823e73dd2f94cbd9291b5d55df7f226", "name": "Electric Scissor Lift 1",
              "author": "cloudhub", "licence": "CC BY 4.0", "yaw": 0.0, "length": 2.5},
 }
