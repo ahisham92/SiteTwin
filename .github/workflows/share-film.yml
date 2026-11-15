@@ -33,10 +33,15 @@ jobs:
         run: |
           sudo apt-get -qq install -y ffmpeg > /dev/null
           mkdir out && mv film.mp4 "out/film-$RUN.mp4"
-          for t in 5 15 25 35 45 55; do ffmpeg -loglevel error -ss $t -i "out/film-$RUN.mp4" -frames:v 1 -vf scale=960:-1 "out/still-$RUN-$t.jpg" || true; done
+          # six stills spread over the film, however short it is
+          len=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "out/film-$RUN.mp4")
+          for k in 1 3 5 7 9 11; do
+            t=$(awk -v l="$len" -v k="$k" 'BEGIN { printf "%.2f", l * k / 12 }')
+            ffmpeg -loglevel error -ss "$t" -i "out/film-$RUN.mp4" -frames:v 1 -vf scale=960:-1 -strict unofficial "out/still-$RUN-$k.jpg" || true
+          done
           cd out
           git init -q -b sample-films
           git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
           git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
           git fetch -q origin sample-films && git reset -q --soft FETCH_HEAD || true
-          git add -- *.mp4 *.jpg && git commit -qm "Sample film from run $RUN" && git push -q origin HEAD:sample-films
+          git add -- *.mp4 $(ls *.jpg 2>/dev/null) && git commit -qm "Sample film from run $RUN" && git push -q origin HEAD:sample-films
