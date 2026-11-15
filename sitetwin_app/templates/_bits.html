@@ -6,7 +6,7 @@
   {%- elif key == 'location' -%}
     {{ ('%.4f, %.4f'|format(p['latitude'], p['longitude'])) if state == 'done' else ('Place it on the map' if state == 'next' else 'After the model') }}
   {%- elif key == 'sequence' -%}
-    {{ (m['sequence']|length ~ ' steps, storey by storey') if state == 'done' else 'Read from the model' }}
+    {{ (m['sequence']|length ~ (' stages, as planned' if m.get('setting') or (m['sequence'] and m['sequence'][0].get('stage')) else ' steps, storey by storey')) if state == 'done' else 'Read from the model' }}
   {%- else -%}
     {%- if state == 'active' -%}{{ 'Waiting for a GPU' if job['status'] == 'queued' else 'Rendering ' ~ (job['percent']|round|int) ~ '%' }}
     {%- elif state == 'done' -%}Ready to watch

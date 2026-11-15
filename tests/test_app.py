@@ -172,3 +172,15 @@ def test_the_render_machine_checking_in_is_shown(app, monkeypatch):
     assert "Waiting" in c.get("/").get_data(as_text=True)
     app.test_client().post("/api/worker/next", headers={"Authorization": "Bearer s3cret"})
     assert "Checked in" in c.get("/").get_data(as_text=True)
+
+
+def test_a_zipped_model_is_taken_and_unzipped(app):
+    import gzip
+    c = client(app)
+    pid = int(c.post("/projects", data={"name": "X"}).headers["Location"].split("/")[-1])
+    up = c.post(f"/projects/{pid}/model", data={"model": (io.BytesIO(gzip.compress(SMALL)), "berth3.ifc.gz")},
+                content_type="multipart/form-data")
+    assert up.status_code == 302
+    p = c.get(f"/api/projects/{pid}").json
+    assert p["stages"]["model"] == "done"
+    assert c.get(f"/projects/{pid}/model.ifc").data == SMALL

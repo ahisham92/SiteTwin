@@ -64,7 +64,7 @@
       {% endif %}
       <form class="upload" method="post" enctype="multipart/form-data" action="{{ url_for('upload_model', pid=p['id']) }}">
         <label class="drop{{ ' slim' if m else '' }}">
-          <input type="file" name="model" accept=".ifc" required>
+          <input type="file" name="model" accept=".ifc,.gz" required>
           <span class="drop-icon" aria-hidden="true">⬆</span>
           <span><span class="drop-title">{{ 'Replace the model' if m else 'Drop the IFC file here, or click to choose it' }}</span><br>
           <span class="small muted">In Revit: File › Export › IFC. Up to 500 MB.{% if m %} The current one is {{ p['model_name'] }}.{% endif %}</span></span>
@@ -109,7 +109,11 @@
 <section class="pane" id="pane-sequence" data-pane="sequence">
   <div class="card">
     <div class="card-head"><div><h2>The build sequence</h2>
+      {% if m and m['sequence'] and m['sequence'][0].get('stage') %}
+      <p class="small muted" style="margin-top:2px">The planner's own stages, carried in the model, in the order they are built. Press play to watch them go; drag to turn, scroll to zoom.</p></div></div>
+      {% else %}
       <p class="small muted" style="margin-top:2px">Drafted from the model: storey by storey from the ground up, and in each storey foundations, columns and walls, beams, slabs, then the envelope. Press play to watch it go up; drag to turn, scroll to zoom.</p></div></div>
+      {% endif %}
     <div class="card-body">
       {% if m and m['sequence'] %}
       <div class="split">

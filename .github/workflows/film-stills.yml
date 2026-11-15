@@ -11,6 +11,7 @@ on:
       seconds: {description: "Film length in seconds", default: "60"}
       frames: {description: "Frames to render (preview quality is 24 fps)", default: "1,60,110,150,185,235,285,330,700,1100,1420"}
       ifc: {description: "IFC in the repository", default: "samples/sample-building.ifc"}
+      quality: {description: "preview (640x360) or draft (1280x720)", default: "preview"}
 
 permissions:
   contents: write
@@ -36,9 +37,10 @@ jobs:
           SECONDS: ${{ inputs.seconds }}
           FRAMES: ${{ inputs.frames }}
           IFC: ${{ inputs.ifc }}
+          QUALITY: ${{ inputs.quality || 'preview' }}
         run: |
           PYTHONPATH=. python -m sitetwin_worker render "$IFC" --out work --lat "$LAT" --lon "$LON" \
-            --seconds "$SECONDS" --quality preview --frames "$FRAMES" 2>&1 \
+            --seconds "$SECONDS" --quality "$QUALITY" --frames "$FRAMES" 2>&1 \
             | grep -v "^Fra:\|HIPEW\|CUEW\| INFO" | sed "s/$SITETWIN_GOOGLE_KEY/…/g; s/$SITETWIN_SKETCHFAB_TOKEN/…/g" | tail -40
           mkdir -p out && cp work/frames/*.png out/ 2>/dev/null || true
       - name: Keep the stills

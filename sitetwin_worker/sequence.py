@@ -65,6 +65,8 @@ class Step:
     top: float = 0.0
     plant: list[str] = field(default_factory=list)
     crew: int = 0
+    how: str = ""            # staged plans: how this stage's elements come and go
+    days: float = 0.0        # staged plans: the stage's working days, when the planner gave them
 
 
 @dataclass
@@ -81,6 +83,10 @@ class Timeline:
     fly_end: int = 0
     clear_start: int = 0
     clear_end: int = 0
+    #: a staged plan (the planner's own stages from the model) rather than the storey-by-storey draft
+    staged: bool = False
+    #: staged plans: elements there today that are broken out, guid -> (start, end)
+    removed: dict = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         return {"fps": self.fps, "frames": self.frames, "build_start": self.build_start,
@@ -172,6 +178,105 @@ def plan(elements: list[Element], seconds: float = 90.0, fps: int = 30,
                     steps=steps, appear=appear, fly_end=fly_end, clear_start=clear_start, clear_end=clear_end)
 
 
+#: Staged plans: the plant each way of working brings, and the crew size.
+HOW_PLANT = {"remove": ["crawler_crane", "excavator", "flatbed_truck"], "repair": ["workboat"],
+             "drive": ["piling_rig", "crawler_crane"], "fill": ["excavator", "flatbed_truck"],
+             "cast": ["concrete_pump", "mixer_truck"], "lift": ["crawler_crane", "flatbed_truck"],
+             "fit": ["crawler_crane", "flatbed_truck"], "exist": [], "ground": []}
+HOW_CREW = {"remove": 6, "repair": 6, "drive": 5, "fill": 4, "cast": 8, "lift": 6, "fit": 4}
+#: Staged plans: how an element's arrival is animated.
+HOW_ARRIVAL = {"cast": "grow", "fill": "grow", "lift": "lift", "fit": "fit", "drive": "drive",
+               "repair": "exist", "exist": "exist", "ground": "exist", "remove": "remove"}
+
+
+def plan_staged(elements: list[Element], seconds: float = 120.0, fps: int = 30, today: float = 3.0,
+                outro: float = 0.08, stages: list[dict[str, Any]] | None = None) -> Timeline:
+    """The planner's own stages, in their order (each element carries its stage, see
+    tools/stage_ifc.py). The film opens on the structure as it is today for ``today`` seconds;
+    each stage then takes a share of the build growing with its element count. Within a stage
+    the work runs along the structure from its root (the low end of its long axis) bay by bay,
+    and cast-in-place work goes one element after another, as one gang pours them."""
+    frames = int(round(seconds * fps))
+    build_start = int(round(min(today, seconds * 0.08) * fps))
+    build_end = int(frames * (1 - outro))
+    built = [e for e in elements if e.how not in ("ground",)]
+    lo = np.min([e.lo for e in built], axis=0)
+    hi = np.max([e.hi for e in built], axis=0)
+    long_x = (hi[0] - lo[0]) >= (hi[1] - lo[1])
+    days_of = {str(s.get("code")): float(s.get("days", 0) or 0) for s in (stages or [])}
+
+    groups: dict[tuple[int, str], list[Element]] = {}
+    for e in elements:
+        if e.stage_order < 0:
+            continue
+        groups.setdefault((e.stage_order, e.stage), []).append(e)
+    keys = sorted(groups)
+    work = [k for k in keys if any(HOW_ARRIVAL.get(e.how, "fit") != "exist" or e.how == "repair" for e in groups[k])]
+    # the planner's durations when every stage has one, otherwise a share growing with the count
+    if work and all(days_of.get(k[1]) for k in work):
+        weights = {k: days_of[k[1]] for k in work}
+    else:
+        weights = {k: max(len(groups[k]) ** 0.6, 4.0) for k in work}
+    total = sum(weights.values()) or 1.0
+    span = build_end - build_start
+    steps: list[Step] = []
+    appear: dict[str, tuple[int, int, str]] = {}
+    removed: dict[str, tuple[int, int]] = {}
+    for k in keys:                               # what stands from the start (today's piles, the ground)
+        for e in groups[k]:
+            if HOW_ARRIVAL.get(e.how, "fit") in ("exist", "remove"):
+                appear[e.guid] = (0, 0, "exist")
+
+    def along(e: Element) -> float:
+        return float(e.centre[0] if long_x else e.centre[1])
+
+    def across(e: Element) -> float:
+        return float(e.centre[1] if long_x else e.centre[0])
+
+    t = float(build_start)
+    for n, k in enumerate(work, start=1):
+        length = span * weights[k] / total
+        s0, s1 = int(round(t)), int(round(t + length))
+        t += length
+        els = groups[k]
+        # bay by bay (3 m) from the root, and across each bay from the land side
+        els = sorted(els, key=lambda e: (int(math.floor((along(e) - float(lo[1 if not long_x else 0])) / 3.0)),
+                                         across(e), float(e.lo[2])))
+        hows = [e.how for e in els]
+        how = max(set(hows), key=hows.count)
+        m = len(els)
+        gap = (s1 - s0) / max(1, m)
+        for i, e in enumerate(els):
+            a = int(round(s0 + i * gap))
+            arrival = HOW_ARRIVAL.get(e.how, "fit")
+            if arrival == "grow":
+                # one after another: each takes a little over its own share, so at most two are
+                # on the go at once (the next one's forms go up as the last is poured)
+                each = max(6, int(round(gap * 1.6)))
+            elif arrival == "remove":
+                each = max(4, int(round(gap * 2)))
+            else:
+                each = max(4, min(int(fps * 0.8), int(round(gap * 2)) or 4))
+            b = min(a + each, max(s1, a + 4))
+            if arrival == "remove":
+                removed[e.guid] = (a, b)
+            elif arrival == "exist":
+                appear[e.guid] = (0, 0, "repair" if e.how == "repair" else "exist")
+                if e.how == "repair":
+                    removed.setdefault("repair:" + e.guid, (a, b))
+            else:
+                appear[e.guid] = (a, b, arrival)
+        lo_ = np.min([e.lo for e in els], axis=0)
+        hi_ = np.max([e.hi for e in els], axis=0)
+        c = (lo_ + hi_) / 2
+        steps.append(Step(n=n, storey=f"Stage {k[1]}", phase=els[0].stage_name or f"Stage {k[1]}", start=s0, end=s1,
+                          guids=[e.guid for e in els], centre=(float(c[0]), float(c[1]), float(c[2])),
+                          top=float(hi_[2]), plant=list(HOW_PLANT.get(how, [])), crew=HOW_CREW.get(how, 4),
+                          how=how, days=days_of.get(k[1], 0.0)))
+    return Timeline(fps=fps, frames=frames, build_start=build_start, build_end=build_end, steps=steps,
+                    appear=appear, staged=True, removed=removed)
+
+
 def plant_windows(tl: Timeline) -> dict[str, list[tuple[int, int]]]:
     """For each kind of plant, the frame ranges it is on site (adjacent steps merged).
     A tower crane, once up, stays until the last step that needs it."""
@@ -207,6 +312,17 @@ def calendar(tl: Timeline) -> list[tuple[int, float]]:
     """(frame, calendar day) pairs through the film: day 0 when the site is handed over, the
     setup before the first step, then each step's working days (5 working days a week)."""
     pts = [(0, 0.0)]
+    if getattr(tl, "staged", False):
+        day = 0.0
+        pts.append((max(1, tl.build_start), 0.0))
+        for st in tl.steps:
+            if st.start > pts[-1][0]:
+                pts.append((st.start, day))
+            day += (st.days or 10) * 7 / 5
+            pts.append((max(st.end, pts[-1][0] + 1), day))
+        if tl.frames > pts[-1][0]:
+            pts.append((tl.frames, day))
+        return pts
     if tl.clear_end > tl.clear_start:
         pts += [(tl.clear_start, 0.0), (tl.clear_end, CLEAR_DAYS * 7 / 5)]
     pts.append((max(tl.build_start, pts[-1][0] + 1), pts[-1][1] + SETUP_DAYS * 7 / 5))
