@@ -300,8 +300,8 @@ def get(name: str):
     elif name == "water":
         # deep Mediterranean blue, as Google's own sea photographs: a dark body, a soft sheen
         bsdf.inputs["Base Color"].default_value = (0.010, 0.040, 0.070, 1)
-        bsdf.inputs["Roughness"].default_value = 0.14
-        bsdf.inputs["Specular IOR Level"].default_value = 0.35
+        bsdf.inputs["Roughness"].default_value = 0.3
+        bsdf.inputs["Specular IOR Level"].default_value = 0.12
         n = tree.nodes
         tc = n.new("ShaderNodeTexCoord")
         wave = n.new("ShaderNodeTexNoise")

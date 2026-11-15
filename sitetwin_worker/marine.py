@@ -569,23 +569,23 @@ def build_crews(elements: list[Element], tl: Timeline, line: tuple[float, float,
 # ---- camera ---------------------------------------------------------------------------------
 
 def build_camera(fp, top: float, tl: Timeline, side: int, sea: float):
-    """A camera held still, as a time-lapse camera on a mast would be: out on the open water
-    beyond the structure's head, looking back along it to its root and the shore behind, so
-    the land, the town and the hills fill the picture and not the open sea."""
+    """A camera held still, as a time-lapse camera on a mast would be: out on the open water off
+    the berth face, toward the head, looking back across all of it to its root and the shore
+    behind, so the whole structure is in the picture and the land fills what is behind it."""
     import bpy
     x0, y0, x1, y1 = fp
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     length = max(x1 - x0, y1 - y0)
     target = bpy.data.objects.new("cam_target", None)
     bpy.context.scene.collection.objects.link(target)
-    target.location = (cx, cy - length * 0.12, sea + 1.0)
+    target.location = (cx, cy - length * 0.04, sea + 1.0)
     cam_data = bpy.data.cameras.new("camera")
     cam_data.lens = 30
     cam_data.clip_end = 20000
     cam = bpy.data.objects.new("camera", cam_data)
     bpy.context.scene.collection.objects.link(cam)
     open_x = x1 if side < 0 else x0                         # the water side
-    cam.location = (open_x - side * length * 0.5, y1 + length * 0.1, sea + length * 0.24)
+    cam.location = (open_x - side * length * 0.95, cy + length * 0.5, sea + length * 0.32)
     c = cam.constraints.new("TRACK_TO")
     c.target = target
     c.track_axis = "TRACK_NEGATIVE_Z"
