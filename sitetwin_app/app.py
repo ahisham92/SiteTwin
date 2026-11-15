@@ -312,11 +312,18 @@ def create_app(store: Store | None = None) -> Flask:
         upload = request.files.get("model")
         if upload is None or not upload.filename:
             raise StoreError(400, "Choose an .ifc file exported from Revit.")
-        if not upload.filename.lower().endswith(".ifc"):
+        name = upload.filename.lower()
+        if not name.endswith((".ifc", ".ifc.gz")):
             raise StoreError(400, "SiteTwin reads .ifc files. In Revit: File > Export > IFC.")
         folder = app.store.project_folder(pid)
         path = folder / "model.ifc"
-        upload.save(path)
+        if name.endswith(".gz"):                    # a big model sent zipped (a fifth of the size)
+            import gzip
+            import shutil
+            with gzip.open(upload.stream, "rb") as src, open(path, "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+        else:
+            upload.save(path)
         summary = ifc.summarise_file(path)
         (folder / "steps.json").write_text(json.dumps({str(k): v for k, v in summary.step_ids.items()}))
         app.store.set_model(who["id"], pid, upload.filename, summary.as_dict())

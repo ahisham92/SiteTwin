@@ -64,7 +64,7 @@
       {% endif %}
       <form class="upload" method="post" enctype="multipart/form-data" action="{{ url_for('upload_model', pid=p['id']) }}">
         <label class="drop{{ ' slim' if m else '' }}">
-          <input type="file" name="model" accept=".ifc" required>
+          <input type="file" name="model" accept=".ifc,.gz" required>
           <span class="drop-icon" aria-hidden="true">⬆</span>
           <span><span class="drop-title">{{ 'Replace the model' if m else 'Drop the IFC file here, or click to choose it' }}</span><br>
           <span class="small muted">In Revit: File › Export › IFC. Up to 500 MB.{% if m %} The current one is {{ p['model_name'] }}.{% endif %}</span></span>

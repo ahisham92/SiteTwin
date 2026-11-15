@@ -91,7 +91,7 @@
     upload.addEventListener('submit', function (ev) { ev.preventDefault(); if (input.files[0]) send(input.files[0]); });
   }
   function send(file) {
-    if (!/\.ifc$/i.test(file.name)) { toast('SiteTwin reads .ifc files. In Revit: File › Export › IFC.', true); return; }
+    if (!/\.ifc(\.gz)?$/i.test(file.name)) { toast('SiteTwin reads .ifc files. In Revit: File › Export › IFC.', true); return; }
     var box = $('.upload-state'), bar = $('[data-upload-bar]'), word = $('[data-upload-word]'), num = $('[data-upload-num]');
     box.classList.remove('hidden');
     var mb = function (b) { return (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + ' MB'; };
