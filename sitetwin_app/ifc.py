@@ -339,7 +339,9 @@ def _stages(entities: dict[int, Entity], by_type: dict[str, list[Entity]]) -> di
 def read_text(path: Path) -> str:
     """The model's text, plain or gzipped (``.ifc.gz``)."""
     path = Path(path)
-    if path.suffix == ".gz":
+    with open(path, "rb") as fh:
+        zipped = fh.read(2) == b"\x1f\x8b"            # gzip, whatever the file is called
+    if zipped:
         import gzip
         return gzip.open(path, "rt", encoding="utf-8", errors="replace").read()
     return path.read_text(encoding="utf-8", errors="replace")
