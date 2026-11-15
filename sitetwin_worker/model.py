@@ -55,7 +55,9 @@ def open_ifc(path: Path | str):
     """The IFC file, plain or gzipped (``.ifc.gz``)."""
     import ifcopenshell
     path = Path(path)
-    if path.suffix == ".gz":
+    with open(path, "rb") as fh:
+        zipped = fh.read(2) == b"\x1f\x8b"            # gzip, whatever the file is called
+    if zipped:
         import gzip
         return ifcopenshell.file.from_string(gzip.open(path, "rt", encoding="utf-8", errors="replace").read())
     return ifcopenshell.open(str(path))
