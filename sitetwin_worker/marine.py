@@ -569,22 +569,23 @@ def build_crews(elements: list[Element], tl: Timeline, line: tuple[float, float,
 # ---- camera ---------------------------------------------------------------------------------
 
 def build_camera(fp, top: float, tl: Timeline, side: int, sea: float):
-    """A camera held still, as a time-lapse camera on a mast would be: off the open-water
-    corner of the structure's root, high enough to see along all of it and the land beside it."""
+    """A camera held still, as a time-lapse camera on a mast would be: out on the open water
+    beyond the structure's head, looking back along it to its root and the shore behind, so
+    the land, the town and the hills fill the picture and not the open sea."""
     import bpy
     x0, y0, x1, y1 = fp
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     length = max(x1 - x0, y1 - y0)
     target = bpy.data.objects.new("cam_target", None)
     bpy.context.scene.collection.objects.link(target)
-    target.location = (cx, cy + length * 0.05, sea + 1.0)
+    target.location = (cx, cy - length * 0.12, sea + 1.0)
     cam_data = bpy.data.cameras.new("camera")
-    cam_data.lens = 32
+    cam_data.lens = 30
     cam_data.clip_end = 20000
     cam = bpy.data.objects.new("camera", cam_data)
     bpy.context.scene.collection.objects.link(cam)
     open_x = x1 if side < 0 else x0                         # the water side
-    cam.location = (open_x - side * length * 0.42, y0 - length * 0.38, sea + length * 0.38)
+    cam.location = (open_x - side * length * 0.5, y1 + length * 0.1, sea + length * 0.24)
     c = cam.constraints.new("TRACK_TO")
     c.target = target
     c.track_axis = "TRACK_NEGATIVE_Z"
@@ -621,7 +622,11 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
         S.build_base(g, min(-3.0, got[1] - 3.0), float(manifest["google"].get("horizon", g.radius)))
     else:
         S.build_terrain(g, manifest, env_folder)
-    build_water((keep_out[0] - 40, keep_out[1] - 40, keep_out[2] + 40, keep_out[3] + 40), sea - 0.12)
+    # under Google's sea everywhere: it shows where the old deck was cut out and through any
+    # hole in Google's mesh, so the sea never shows white
+    reach = float((manifest.get("google") or {}).get("horizon", g.radius)) if got else 60.0
+    build_water((-reach, -reach, reach, reach) if got else
+                (keep_out[0] - 40, keep_out[1] - 40, keep_out[2] + 40, keep_out[3] + 40), sea - 0.12)
     build_ground(ground, keep_out)
     objs = build_model(elements, tl, sea)
     line = land_line(built, ground, sea)

@@ -318,7 +318,7 @@
     var words = {
       model: st.model === 'done' && m ? Object.values(m.counts).reduce(function (a, b) { return a + b; }, 0) + ' elements' : 'Upload the IFC',
       location: st.location === 'done' ? p.latitude.toFixed(4) + ', ' + p.longitude.toFixed(4) : (st.location === 'next' ? 'Place it on the map' : 'After the model'),
-      sequence: st.sequence === 'done' ? m.sequence.length + ' steps, storey by storey' : 'Read from the model',
+      sequence: st.sequence === 'done' ? m.sequence.length + (m.sequence.length && m.sequence[0].stage ? ' stages, as planned' : ' steps, storey by storey') : 'Read from the model',
       video: st.video === 'active' ? (j.status === 'queued' ? 'Waiting for a GPU' : 'Rendering ' + Math.round(j.percent) + '%') : st.video === 'done' ? 'Ready to watch' : st.video === 'failed' ? 'Last try failed' : st.video === 'next' ? 'Make the film' : 'After the location',
     };
     $$('.step').forEach(function (s, i) {

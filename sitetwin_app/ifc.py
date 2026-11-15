@@ -223,12 +223,18 @@ def summarise(text: str) -> Summary:
     if by_type.get("IFCPROJECT"):
         p = by_type["IFCPROJECT"][0].args
         out.project = (p[2] if len(p) > 2 and isinstance(p[2], str) else "") or ""
+    # lengths in the file's own unit (Revit writes millimetres); everything shown is in metres
+    metre = 1.0
+    for u in by_type.get("IFCSIUNIT", []):
+        a = u.args
+        if len(a) > 2 and isinstance(a[1], Enum) and a[1].value.upper() == "LENGTHUNIT" and isinstance(a[2], Enum):
+            metre = {"MILLI": 0.001, "CENTI": 0.01, "DECI": 0.1, "KILO": 1000.0}.get(a[2].value.upper(), 1.0)
     if by_type.get("IFCSITE"):
         s = by_type["IFCSITE"][0].args
         out.site = (s[2] if len(s) > 2 and isinstance(s[2], str) else "") or ""
         if len(s) > 11:
             out.latitude, out.longitude = _angle(s[9]), _angle(s[10])
-            out.elevation = float(s[11]) if isinstance(s[11], (int, float)) else None
+            out.elevation = float(s[11]) * metre if isinstance(s[11], (int, float)) else None
 
     out.counts = dict(sorted(((t, len(v)) for t, v in by_type.items() if t in BUILT),
                              key=lambda kv: -kv[1]))
@@ -245,7 +251,7 @@ def summarise(text: str) -> Summary:
 
     def level(e: Entity) -> float:
         v = e.args[9] if len(e.args) > 9 else None
-        return float(v) if isinstance(v, (int, float)) else 0.0
+        return float(v) * metre if isinstance(v, (int, float)) else 0.0
 
     # A stair, roof or curtain wall is an assembly: its flights, slabs and panels are its parts,
     # held by an IfcRelAggregates rather than by the storey. They go up with it.

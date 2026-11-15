@@ -298,9 +298,10 @@ def get(name: str):
     elif name == "rail":
         _noise_mix(tree, bsdf, (0.20, 0.17, 0.14), (0.28, 0.25, 0.22), scale=3, rough=(0.8, 1.0))
     elif name == "water":
-        bsdf.inputs["Base Color"].default_value = (0.02, 0.07, 0.09, 1)
-        bsdf.inputs["Roughness"].default_value = 0.06
-        bsdf.inputs["Specular IOR Level"].default_value = 0.6
+        # deep Mediterranean blue, as Google's own sea photographs: a dark body, a soft sheen
+        bsdf.inputs["Base Color"].default_value = (0.010, 0.040, 0.070, 1)
+        bsdf.inputs["Roughness"].default_value = 0.14
+        bsdf.inputs["Specular IOR Level"].default_value = 0.35
         n = tree.nodes
         tc = n.new("ShaderNodeTexCoord")
         wave = n.new("ShaderNodeTexNoise")
