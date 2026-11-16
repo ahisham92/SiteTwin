@@ -73,7 +73,8 @@ async function heights(lat, lon, z, R) {
 }
 
 // One ring of photographed ground: (2R+1)² imagery tiles at zoom z, each a grid lifted to its
-// heights. `hole` (metres, half-size) leaves out the tiles a finer ring covers.
+// heights. `hole` ({w, e, n, s} in metres east and south) is the area a finer ring covers: the ground
+// here goes under it there, so the coarser heights never show through the finer ground.
 async function groundRing(scene, lat, lon, z, R, height, lift, hole, seg, onTile) {
   const [fx, fy] = tileXY(lat, lon, z);
   const cx = Math.floor(fx), cy = Math.floor(fy);
@@ -83,7 +84,7 @@ async function groundRing(scene, lat, lon, z, R, height, lift, hole, seg, onTile
   const jobs = [];
   for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
     const x0 = (cx + dx - fx) * m, y0 = (cy + dy - fy) * m;          // the tile's north-west corner, east/south
-    if (hole && x0 >= -hole && x0 + m <= hole && y0 >= -hole && y0 + m <= hole) continue;
+    if (hole && x0 >= hole.w && x0 + m <= hole.e && y0 >= hole.n && y0 + m <= hole.s) continue;
     jobs.push(new Promise((ok) => {
       const made = (tex) => {
         if (tex) { tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; }
@@ -104,11 +105,13 @@ async function groundRing(scene, lat, lon, z, R, height, lift, hole, seg, onTile
           if (!px) return null;
           const i = clamp(Math.floor((e - x0) / m * 64), 0, 63), j = clamp(Math.floor((s - y0) / m * 64), 0, 63);
           const k = (j * 64 + i) * 4, r = px[k], g = px[k + 1], b = px[k + 2];
-          return b > r + 4 && g + 30 > r;                              // bluer than red: water (land here is beige, green or grey)
+          return b > r + 18 && g > r + 12;                            // sea is blue or teal, well clear of red; roads, roofs and quays are grey, land beige or green
         };
         for (let i = 0; i < p.count; i++) {
           const e = p.getX(i) + x0 + m / 2, s = p.getZ(i) + y0 + m / 2;
-          p.setXYZ(i, e, lift(height(e, s), wet(e, s)), s);
+          const pad = m / seg;
+          const under = hole && e > hole.w + pad && e < hole.e - pad && s > hole.n + pad && s < hole.s - pad;
+          p.setXYZ(i, e, under ? -60 : lift(height(e, s), wet(e, s)), s);
         }
         geo.computeVertexNormals();
         // without the photograph (the imagery server unreachable), the ground keeps its shape in a dry earth colour
@@ -518,18 +521,20 @@ export function open(el, ui) {
         // the land in the model's levels: above sea in metres + mean sea level (marine); on land
         // the ground at the site is the model's zero
         // at sea, ground the photograph shows as water (or, without it, anything below 2.5 m: elevation
-        // data along a coast is coarse) goes under the sea
-        const lift = marine ? (h, wet) => ((wet === true || h < (wet === false ? 0.3 : 2.5)) ? sea - 8 : h + sea) : (h) => h - siteH;
+        // data along a coast is coarse) goes under the sea; ground it shows as dry stays at least 1.5 m up
+        const lift = marine ? (h, wet) => (wet === true || (wet == null && h < 2.5) ? sea - 8 : Math.max(h, 1.5) + sea) : (h) => h - siteH;
         const hn = (e, s) => (hNear ? hNear(e, s) : hFar(e, s));
         groundAt = (x, z) => lift(hn(x - ox, z - oz));
         const place = (g) => { g.position.set(ox, 0, oz); };
         const near = new THREE.Group(); place(near); scene.add(near);
         const far = new THREE.Group(); place(far); scene.add(far);
         let tiles = 0;
-        const half17 = metresPerTile(lat, 17) * 3.5;
+        // the area the near ring covers, for the far ring to go under
+        const [f17x, f17y] = tileXY(lat, lon, 17), m17 = metresPerTile(lat, 17);
+        const nearBox = { w: (Math.floor(f17x) - 4 - f17x) * m17, e: (Math.floor(f17x) + 5 - f17x) * m17, n: (Math.floor(f17y) - 4 - f17y) * m17, s: (Math.floor(f17y) + 5 - f17y) * m17 };
         await Promise.all([
           groundRing(near, lat, lon, 17, 4, hn, lift, 0, 24, () => bar(82 + Math.min(14, ++tiles / 10))),
-          groundRing(far, lat, lon, 14, 4, hFar || hn, (h, wet) => lift(h, wet) - 1.2, half17, 16),
+          groundRing(far, lat, lon, 14, 4, hFar || hn, (h, wet) => lift(h, wet) - 1.2, nearBox, 32),
         ]);
       }
     }
@@ -666,8 +671,8 @@ export function open(el, ui) {
     const camHome = () => {
       const p = C.clone();
       const toHead = rootEnd ? -1 : 1;
-      if (alongX) { p.z += seaSide * L * 1.15; p.x += toHead * L * 0.5; } else { p.x += seaSide * L * 1.15; p.z += toHead * L * 0.5; }
-      p.y = all.max.y + L * 0.3;
+      if (alongX) { p.z += seaSide * L * 0.85; p.x += toHead * L * 0.95; } else { p.x += seaSide * L * 0.85; p.z += toHead * L * 0.95; }
+      p.y = all.max.y + L * 0.42;
       return p;
     };
     camera.position.copy(camHome());
@@ -836,7 +841,7 @@ export function open(el, ui) {
         const p = home.clone().sub(C).applyAxisAngle(new THREE.Vector3(0, 1, 0), drift).add(C);
         camera.position.copy(p);
         const look = C.clone().lerp(lastFront, 0.08); look.y = sea;
-        if (alongX) look.x -= (rootEnd ? -1 : 1) * L * 0.06; else look.z -= (rootEnd ? -1 : 1) * L * 0.06;
+        if (alongX) look.x -= (rootEnd ? -1 : 1) * L * 0.15; else look.z -= (rootEnd ? -1 : 1) * L * 0.15;
         camera.lookAt(look);
       }
 
@@ -966,5 +971,5 @@ export function open(el, ui) {
     caption(g, W, H);
     return still.toDataURL('image/jpeg', 0.9);
   }
-  return { seek: (sec) => { t = sec; controls.enabled = false; film && film.show(t); }, frameAt, get ready() { return !!film; }, get film() { return film; } };
+  return { seek: (sec) => { t = sec; controls.enabled = false; film && film.show(t); }, frameAt, get ready() { return !!film; }, get film() { return film; }, get three() { return { THREE, scene, camera, renderer, controls }; } };
 }
