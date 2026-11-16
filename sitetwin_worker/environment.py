@@ -182,7 +182,7 @@ def overpass_query(local: Local, radius: float) -> str:
             f"way[highway]{bb};way[railway=rail]{bb};"
             f"way[natural=water]{bb};relation[natural=water]{bb};way[waterway]{bb};"
             f"way[landuse]{bb};way[leisure~\"park|pitch|garden\"]{bb};way[natural~\"wood|scrub|grassland|beach|sand\"]{bb};"
-            f"way[man_made~\"pier|breakwater\"]{bb};"
+            f"way[man_made~\"pier|breakwater|groyne|storage_tank|gasometer|silo\"]{bb};"
             f");out geom;")
 
 
@@ -202,7 +202,11 @@ def features_from_osm(data: dict[str, Any], local: Local) -> list[dict[str, Any]
                 continue
             closed = len(pts) > 3 and pts[0] == pts[-1]
             f: dict[str, Any] | None = None
-            if "building" in tags and closed:
+            if tags.get("man_made") in ("storage_tank", "gasometer", "silo") and closed:
+                # a round tank (often also mapped as a building): its own height where mapped,
+                # else as tall as half its width
+                f = {"kind": "tank", "height": float(tags["height"]) if str(tags.get("height", "")).replace(".", "").isdigit() else None}
+            elif "building" in tags and closed:
                 f = {"kind": "building", "height": _height(tags, el["id"]),
                      "use": tags.get("building", "yes")}
             elif "highway" in tags and tags["highway"] in ROAD_WIDTH:
@@ -217,7 +221,7 @@ def features_from_osm(data: dict[str, Any], local: Local) -> list[dict[str, Any]
                 f = {"kind": "water"}
             elif "waterway" in tags:
                 f = {"kind": "river", "width": 8.0 if tags["waterway"] == "river" else 3.0}
-            elif tags.get("man_made") in ("pier", "breakwater"):
+            elif tags.get("man_made") in ("pier", "breakwater", "groyne"):
                 f = {"kind": "pier" if closed else "pier_line", "width": 8.0}
             elif closed and (tags.get("landuse") in ("grass", "meadow", "forest", "recreation_ground", "village_green")
                              or tags.get("leisure") in ("park", "pitch", "garden")
@@ -247,7 +251,10 @@ def fetch_osm(local: Local, radius: float, fetch: Fetch, url: str, wait=None) ->
     last: Exception | None = None
     for attempt, u in enumerate([urls[0], urls[0]] + urls[1:]):
         try:
-            return features_from_osm(json.loads(fetch(u, body)), local)
+            raw = json.loads(fetch(u, body))
+            feats = features_from_osm(raw, local)
+            fetch_osm.last_raw = raw
+            return feats
         except Exception as exc:                          # noqa: BLE001 - try again elsewhere
             last = exc
             wait(min(20, 4 * (attempt + 1)))
@@ -257,7 +264,8 @@ def fetch_osm(local: Local, radius: float, fetch: Fetch, url: str, wait=None) ->
 # ---- all of it --------------------------------------------------------------------------
 
 def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources | None = None,
-           fetch: Fetch = http_get, refresh: bool = False, intro: bool = True) -> dict[str, Any]:
+           fetch: Fetch = http_get, refresh: bool = False, intro: bool = True,
+           google: bool = True) -> dict[str, Any]:
     """Fetch (or reuse) everything around (lat, lon) into ``folder``; returns the manifest."""
     sources = sources or Sources()
     folder = Path(folder)
@@ -290,6 +298,8 @@ def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources
 
     try:
         from . import google3d
+        if not google:
+            raise LookupError("surroundings modelled from map data instead")
         manifest["google"] = google3d.gather(lat, lon, radius, folder / "google", fetch, intro=intro)
         manifest["credits"].insert(0, "3D surroundings: " + manifest["google"]["credit"])
     except LookupError as exc:                         # no key, or Google has no 3D here
@@ -300,6 +310,8 @@ def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources
     try:
         feats = fetch_osm(local, radius, fetch, sources.overpass)
         (folder / "osm.json").write_text(json.dumps(feats))
+        if getattr(fetch_osm, "last_raw", None):
+            (folder / "osm_raw.json").write_text(json.dumps(fetch_osm.last_raw))
         manifest["osm"] = {"file": "osm.json", "counts": _count(feats)}
         manifest["credits"].append("Buildings, roads and water: © OpenStreetMap contributors")
     except Exception as exc:                           # noqa: BLE001 - the scene goes on empty

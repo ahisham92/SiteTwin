@@ -12,6 +12,7 @@ on:
       frames: {description: "Frames to render (preview quality is 24 fps)", default: "1,60,110,150,185,235,285,330,700,1100,1420"}
       ifc: {description: "IFC in the repository", default: "samples/sample-building.ifc"}
       quality: {description: "preview (640x360) or draft (1280x720)", default: "preview"}
+      surroundings: {description: "google (photo-real 3D) or model (rebuilt from map data, marine sites)", default: "google"}
 
 permissions:
   contents: write
@@ -38,6 +39,7 @@ jobs:
           FRAMES: ${{ inputs.frames }}
           IFC: ${{ inputs.ifc }}
           QUALITY: ${{ inputs.quality || 'preview' }}
+          SITETWIN_SURROUNDINGS: ${{ inputs.surroundings }}
         run: |
           PYTHONPATH=. python -m sitetwin_worker render "$IFC" --out work --lat "$LAT" --lon "$LON" \
             --seconds "$SECONDS" --quality "$QUALITY" --frames "$FRAMES" 2>&1 \

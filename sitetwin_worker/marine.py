@@ -103,10 +103,15 @@ def workboat():
 
 # ---- the water, and the model's ground -------------------------------------------------
 
-def build_water(around: tuple[float, float, float, float], z: float) -> None:
-    """The sea where Google's surface was cut away (it shows only through the cut)."""
+def build_water(around: tuple[float, float, float, float], z: float, clear: bool = False) -> None:
+    """The sea where Google's surface was cut away (it shows only through the cut). ``clear``:
+    the sea itself, a little clear, over a sea bed, so piles are seen going down into it."""
     x0, y0, x1, y1 = around
-    S._mesh("sea_under", [(x0, y0, z), (x1, y0, z), (x1, y1, z), (x0, y1, z)], [(0, 1, 2, 3)], M.get("water"))
+    S._mesh("sea_under", [(x0, y0, z), (x1, y0, z), (x1, y1, z), (x0, y1, z)], [(0, 1, 2, 3)],
+            M.get("sea_clear" if clear else "water"))
+    if clear:
+        d = z - 7.0
+        S._mesh("sea_bed", [(x0, y0, d), (x1, y0, d), (x1, y1, d), (x0, y1, d)], [(0, 1, 2, 3)], M.get("sea_bed"))
 
 
 def build_ground(ground: list[Element], keep: tuple[float, float, float, float]) -> list:
@@ -517,8 +522,11 @@ def build_crews(elements: list[Element], tl: Timeline, line: tuple[float, float,
         a, b, how = tl.appear.get(g, (0, 0, "exist"))
         return how in ("exist", "repair") or b <= f
 
+    # a surface a person can be on: a slab, shell or beam of some size, not a lone pile cap out
+    # in the water with no way to it
     flat = [e for e in elements if e.how not in ("ground", "fill") and (e.hi[0] - e.lo[0]) > 1.0
-            and (e.hi[1] - e.lo[1]) > 1.0 and (e.hi[2] - e.lo[2]) < 2.6 and e.hi[2] > 1.0]
+            and (e.hi[1] - e.lo[1]) > 1.0 and (e.hi[2] - e.lo[2]) < 2.6 and e.hi[2] > 1.0
+            and (e.hi[0] - e.lo[0]) * (e.hi[1] - e.lo[1]) >= 6.0]
 
     for st in tl.steps:
         chunk = max(12, (st.end - st.start) // 4)
@@ -578,14 +586,14 @@ def build_camera(fp, top: float, tl: Timeline, side: int, sea: float):
     length = max(x1 - x0, y1 - y0)
     target = bpy.data.objects.new("cam_target", None)
     bpy.context.scene.collection.objects.link(target)
-    target.location = (cx, cy - length * 0.04, sea + 1.0)
+    target.location = (cx, cy - length * 0.25, sea + 1.0)
     cam_data = bpy.data.cameras.new("camera")
     cam_data.lens = 30
     cam_data.clip_end = 20000
     cam = bpy.data.objects.new("camera", cam_data)
     bpy.context.scene.collection.objects.link(cam)
     open_x = x1 if side < 0 else x0                         # the water side
-    cam.location = (open_x - side * length * 0.95, cy + length * 0.5, sea + length * 0.32)
+    cam.location = (open_x - side * length * 0.7, y1 + length * 0.55, sea + length * 0.5)
     c = cam.constraints.new("TRACK_TO")
     c.target = target
     c.track_axis = "TRACK_NEGATIVE_Z"
@@ -610,23 +618,33 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     top = float(max(e.hi[2] for e in built))
     keep_out = (fp[0] - 1.5, fp[1] - 1.5, fp[2] + 1.5, fp[3] + 1.5)
     g = S.Ground(manifest, env_folder, keep_out)
-    has_google = bool(manifest.get("google"))
+    has_google = bool(manifest.get("google")) and not manifest.get("modelled")
     got = None
-    if has_google:
+    around = None
+    if manifest.get("modelled"):
+        from . import surroundings
+        around = surroundings.build(manifest, env_folder, sea, (keep_out[0], keep_out[2], keep_out[1], keep_out[3]))
+        around.pop("ground", None)
+        print("  modelled surroundings:", around)
+    elif has_google:
         # the shore's own streets stay as Google has them: nothing is rebuilt near a site at sea
         quiet = {k: v for k, v in manifest.items() if k != "osm"}
         got = S.build_google(g, quiet, env_folder, keep_out, None, None, flat=0.0, cut_above=0.6)
         manifest.update({k: v for k, v in quiet.items() if k.startswith("_")})
         manifest.pop("_street", None)
-    if got:
+    if around is not None:
+        pass
+    elif got:
         S.build_base(g, min(-3.0, got[1] - 3.0), float(manifest["google"].get("horizon", g.radius)))
     else:
         S.build_terrain(g, manifest, env_folder)
     # under Google's sea everywhere: it shows where the old deck was cut out and through any
     # hole in Google's mesh, so the sea never shows white
-    reach = float((manifest.get("google") or {}).get("horizon", g.radius)) if got else 60.0
-    build_water((-reach, -reach, reach, reach) if got else
-                (keep_out[0] - 40, keep_out[1] - 40, keep_out[2] + 40, keep_out[3] + 40), sea - 0.12)
+    reach = (25000.0 if around is not None else
+             float((manifest.get("google") or {}).get("horizon", g.radius)) if got else 60.0)
+    build_water((-reach, -reach, reach, reach) if (got or around is not None) else
+                (keep_out[0] - 40, keep_out[1] - 40, keep_out[2] + 40, keep_out[3] + 40), sea - 0.12,
+                clear=around is not None)
     build_ground(ground, keep_out)
     objs = build_model(elements, tl, sea)
     line = land_line(built, ground, sea)
@@ -637,5 +655,5 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     build_camera(fp, top, tl, line[2], sea)
     S._all_constant_hides()
     S.configure_render(opts, tl.frames, out_dir)
-    return {"setting": "marine", "clashes_removed": clashes, "google": got is not None, "land_line": line,
+    return {"setting": "marine", "clashes_removed": clashes, "google": got is not None, "modelled": around, "land_line": line,
             "sun": [round(elev, 1), round(az, 1)], "top": top, "footprint": fp}
