@@ -16,6 +16,7 @@ renderer is the job of IfcOpenShell in the rendering pipeline (see README).
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -204,10 +205,14 @@ class Summary:
     #: Each step's elements by their STEP id (#123), parts of an assembly with it. Kept out of
     #: as_dict: a big model has tens of thousands, and only the 3D preview wants them.
     step_ids: dict[int, list[int]] = field(default_factory=dict)
+    #: For the film played in the browser: how each staged element comes and goes ({id: how}),
+    #: the planner's stages (code, name, how, days) and mean sea level in the model's levels.
+    film: dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> dict[str, Any]:
         out = self.__dict__.copy()
         out.pop("step_ids", None)
+        out.pop("film", None)
         return out
 
 
@@ -278,6 +283,12 @@ def summarise(text: str) -> Summary:
             out.sequence.append({"step": k, "storey": f"Stage {code}", "phase": name,
                                  "elements": len(elems), "stage": code})
             out.step_ids[k] = [i for eid in elems for i in with_parts(eid)]
+        how = {}
+        for eid, h in staged["how"].items():
+            for i in with_parts(eid):
+                how[str(i)] = h
+        out.film = {"how": how, "stages": staged["stages"], "sea_level": staged["sea_level"],
+                    "setting": staged["setting"]}
         for storey in sorted(storeys, key=level):
             name = storey.args[2] if isinstance(storey.args[2], str) else f"#{storey.id}"
             out.storeys.append({"name": name, "elevation": level(storey), "elements": len(holds[storey.id])})
@@ -313,13 +324,23 @@ def _stages(entities: dict[int, Entity], by_type: dict[str, list[Entity]]) -> di
 
     by_stage: dict[str, list[int]] = {}
     names: dict[str, tuple[int, str]] = {}
+    how: dict[int, str] = {}
     setting = ""
+    sea_level = 0.0
+    stages: list[dict[str, Any]] = []
     for rel in by_type.get("IFCRELDEFINESBYPROPERTIES", []):
         ps = entities.get(rel.args[5].id) if len(rel.args) > 5 and isinstance(rel.args[5], Ref) else None
         if ps is None or ps.type != "IFCPROPERTYSET" or len(ps.args) < 5:
             continue
         if ps.args[2] == "SiteTwin_Site":
-            setting = str(props(ps).get("Setting") or "")
+            site = props(ps)
+            setting = str(site.get("Setting") or "")
+            if isinstance(site.get("Sea level"), (int, float)):
+                sea_level = float(site["Sea level"])
+            try:
+                stages = json.loads(str(site.get("Stages") or "[]"))
+            except ValueError:
+                stages = []
         if ps.args[2] != "SiteTwin_Sequence":
             continue
         v = props(ps)
@@ -330,10 +351,14 @@ def _stages(entities: dict[int, Entity], by_type: dict[str, list[Entity]]) -> di
         names.setdefault(code, (int(order) if isinstance(order, (int, float)) else 999, str(v.get("Stage name") or code)))
         objs = rel.args[4] if isinstance(rel.args[4], list) else []
         by_stage.setdefault(code, []).extend(r.id for r in objs if isinstance(r, Ref))
+        for r in objs:
+            if isinstance(r, Ref):
+                how[r.id] = str(v.get("How") or "")
     if not by_stage:
         return None
     codes = sorted(by_stage, key=lambda c: (names[c][0], c))
-    return {"setting": setting, "steps": [(c, names[c][1], by_stage[c]) for c in codes]}
+    return {"setting": setting, "steps": [(c, names[c][1], by_stage[c]) for c in codes],
+            "how": how, "stages": stages, "sea_level": sea_level}
 
 
 def read_text(path: Path) -> str:

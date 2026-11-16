@@ -427,3 +427,15 @@ input[type="checkbox"] { width: auto; }
   background: var(--ink); color: var(--plane); font-size: 0.85rem; z-index: 50; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
 .toast.error { background: var(--critical); color: #fff; }
 .danger-zone { margin-top: 24px; display: flex; justify-content: flex-end; }
+
+/* the construction film */
+.film-view { height: auto; aspect-ratio: 16 / 9; background: #0e1620; }
+.film-hud { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 16px 12px; color: #fff;
+  background: linear-gradient(transparent, rgba(10, 18, 28, 0.78)); display: grid; grid-template-columns: auto 1fr; gap: 2px 14px;
+  font-size: 14px; pointer-events: none; }
+.film-hud b { font-weight: 600; }
+.film-hud .when { color: #f2a516; font-weight: 600; }
+.film-hud .what { grid-column: 1 / -1; color: #e8edf2; }
+.film-hud .track { grid-column: 1 / -1; height: 3px; background: rgba(255,255,255,.2); border-radius: 2px; overflow: hidden; margin-top: 4px; }
+.film-hud .track span { display: block; height: 100%; background: #f2a516; }
+.film-view .viewer-msg { color: #dfe7ee; }
