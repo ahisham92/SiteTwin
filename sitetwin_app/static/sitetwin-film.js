@@ -14,7 +14,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from './vendor/three/OrbitControls.js';
 import { Sky } from './vendor/three/Sky.js';
-import { Water } from './vendor/three/Water.js';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const INTRO = 5;          // seconds of the site as it is today
@@ -105,7 +104,7 @@ async function groundRing(scene, lat, lon, z, R, height, lift, hole, seg, onTile
           if (!px) return null;
           const i = clamp(Math.floor((e - x0) / m * 64), 0, 63), j = clamp(Math.floor((s - y0) / m * 64), 0, 63);
           const k = (j * 64 + i) * 4, r = px[k], g = px[k + 1], b = px[k + 2];
-          return b > r + 12 && b + 6 >= g && r < 120;                  // blue-green and darkish: water
+          return b > r + 4 && g + 30 > r;                              // bluer than red: water (land here is beige, green or grey)
         };
         for (let i = 0; i < p.count; i++) {
           const e = p.getX(i) + x0 + m / 2, s = p.getZ(i) + y0 + m / 2;
@@ -490,12 +489,12 @@ export function open(el, ui) {
     const sky = new Sky();
     sky.scale.setScalar(50000);
     const su = sky.material.uniforms;
-    su.turbidity.value = 4; su.rayleigh.value = 1.2; su.mieCoefficient.value = 0.004; su.mieDirectionalG.value = 0.8;
+    su.turbidity.value = 2.2; su.rayleigh.value = 1.6; su.mieCoefficient.value = 0.004; su.mieDirectionalG.value = 0.8;
     su.sunPosition.value.copy(sunDir);
     scene.add(sky);
     const pmrem = new THREE.PMREMGenerator(renderer);
     const skyScene = new THREE.Scene(); const sky2 = new Sky(); sky2.scale.setScalar(50000); sky2.material.uniforms.sunPosition.value.copy(sunDir);
-    Object.assign(sky2.material.uniforms.turbidity, { value: 4 }); skyScene.add(sky2);
+    Object.assign(sky2.material.uniforms.turbidity, { value: 2.2 }); sky2.material.uniforms.rayleigh.value = 1.6; skyScene.add(sky2);
     scene.environment = pmrem.fromScene(skyScene).texture;
     scene.fog = new THREE.Fog(0xc6d3dc, L * 12, 26000);
 
@@ -535,13 +534,15 @@ export function open(el, ui) {
       }
     }
     if (marine) {
-      const water = new Water(new THREE.PlaneGeometry(60000, 60000), {
-        textureWidth: 1024, textureHeight: 1024, waterNormals: waterNormals(), sunDirection: sunDir.clone(),
-        sunColor: 0xd8d2c4, waterColor: 0x082f45, distortionScale: 2.4, fog: true, alpha: 1,
-      });
+      const ripples = waterNormals();
+      ripples.repeat.set(900, 900);
+      const water = new THREE.Mesh(new THREE.PlaneGeometry(60000, 60000), new THREE.MeshPhysicalMaterial({
+        color: 0x0b3448, roughness: 0.16, metalness: 0, normalMap: ripples, normalScale: new THREE.Vector2(0.35, 0.35),
+        envMapIntensity: 0.55, clearcoat: 0.3, clearcoatRoughness: 0.2,
+      }));
       water.rotation.x = -Math.PI / 2;
       water.position.set(C.x, sea, C.z);
-      water.material.uniforms.size.value = 0.9;
+      water.receiveShadow = true;
       scene.add(water);
       film_water = water;
     }
@@ -664,7 +665,8 @@ export function open(el, ui) {
     const seaSide = -landSide;
     const camHome = () => {
       const p = C.clone();
-      if (alongX) { p.z += seaSide * L * 0.95; p.x += (rootEnd ? -1 : 1) * L * 0.25; } else { p.x += seaSide * L * 0.95; p.z += (rootEnd ? -1 : 1) * L * 0.25; }
+      const toHead = rootEnd ? -1 : 1;
+      if (alongX) { p.z += seaSide * L * 1.15; p.x += toHead * L * 0.5; } else { p.x += seaSide * L * 1.15; p.z += toHead * L * 0.5; }
       p.y = all.max.y + L * 0.3;
       return p;
     };
@@ -758,7 +760,7 @@ export function open(el, ui) {
       crane.g.rotation.y = 0;
       craneAt.slew += Math.atan2(Math.sin(slew - craneAt.slew), Math.cos(slew - craneAt.slew)) * (jump ? 1 : 0.12);
       crane.top.rotation.y = craneAt.slew;
-      const reach = clamp(Math.hypot(dx, dz) - 1.8, crane.boomLen * 0.25, crane.boomLen * 0.92);
+      const reach = clamp(Math.hypot(dx, dz) - 1.8, crane.boomLen * 0.42, crane.boomLen * 0.92);
       crane.boom.rotation.z = Math.acos(reach / crane.boomLen);
       crane.g.updateMatrixWorld(true);
       const tip = crane.tip.getWorldPosition(new THREE.Vector3());
@@ -830,10 +832,11 @@ export function open(el, ui) {
       // the camera, held on the water, drifting a little with the work
       if (!controls.enabled) {
         const home = camHome();
-        const drift = Math.sin(t / film.end * Math.PI * 2) * 0.12;
+        const drift = Math.sin(t / film.end * Math.PI * 2) * 0.05;
         const p = home.clone().sub(C).applyAxisAngle(new THREE.Vector3(0, 1, 0), drift).add(C);
         camera.position.copy(p);
-        const look = C.clone().lerp(lastFront, 0.25); look.y = all.min.y + S.y * 0.3;
+        const look = C.clone().lerp(lastFront, 0.08); look.y = sea;
+        if (alongX) look.x -= (rootEnd ? -1 : 1) * L * 0.06; else look.z -= (rootEnd ? -1 : 1) * L * 0.06;
         camera.lookAt(look);
       }
 
@@ -891,7 +894,7 @@ export function open(el, ui) {
       ui.scrub.value = Math.round(t / film.end * 1000);
     }
     if (controls.enabled) controls.update();
-    if (film_water) film_water.material.uniforms.time.value = now / 1000 * 0.6;
+    if (film_water) film_water.material.normalMap.offset.set(now / 1000 * 0.004, now / 1000 * 0.0025);
     render();
   }
   function render() {
@@ -956,7 +959,7 @@ export function open(el, ui) {
     if (!still) { still = document.createElement('canvas'); still.width = W; still.height = H; }
     t = sec; controls.enabled = false; playing = false;
     film.show(t);
-    if (film_water) film_water.material.uniforms.time.value = sec * 0.6;
+    if (film_water) film_water.material.normalMap.offset.set(sec * 0.004, sec * 0.0025);
     renderer.render(scene, camera);
     const g = still.getContext('2d');
     g.drawImage(renderer.domElement, 0, 0, W, H);
