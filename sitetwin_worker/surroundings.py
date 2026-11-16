@@ -256,6 +256,58 @@ def build_osm(feats: list[dict[str, Any]], ground: Surface, wet: np.ndarray, kee
     return counts
 
 
+def boulders(objs, index: int, density: float, seed: int = 3, near=None, size=(0.9, 2.1), name: str = "armour") -> int:
+    """Armour stone: single boulders laid over the faces of ``objs`` that carry material slot
+    ``index`` (the rock slopes), ``density`` a square metre, half sunk into the slope, each one
+    its own size, shape and turn. ``near(x, y)`` limits them to where they will be seen."""
+    import random
+    import bmesh
+    import bpy
+    from mathutils import Euler, Matrix, Vector
+    rng = random.Random(seed)
+    bm = bmesh.new()
+    count = 0
+    for ob in objs:
+        mw = ob.matrix_world
+        me = ob.data
+        for poly in me.polygons:
+            if (index is not None and poly.material_index != index) or poly.area <= 0:
+                continue
+            c = mw @ poly.center
+            top = max((mw @ me.vertices[i].co).z for i in poly.vertices)
+            if near is not None and not near(c.x, c.y, c.z, top):
+                continue
+            n_here = poly.area * density
+            k = int(n_here) + (1 if rng.random() < n_here - int(n_here) else 0)
+            if not k:
+                continue
+            vs = [mw @ me.vertices[i].co for i in poly.vertices]
+            nrm = (mw.to_3x3() @ poly.normal).normalized()
+            for _ in range(k):
+                # a point in the face (fan triangles, by chance)
+                t = rng.randrange(1, len(vs) - 1)
+                a, b = rng.random(), rng.random()
+                if a + b > 1:
+                    a, b = 1 - a, 1 - b
+                p = vs[0] + (vs[t] - vs[0]) * a + (vs[t + 1] - vs[0]) * b
+                sz = rng.uniform(*size)
+                m = (Matrix.Translation(p - nrm * sz * 0.25)
+                     @ Euler((rng.uniform(0, 6.3), rng.uniform(0, 6.3), rng.uniform(0, 6.3))).to_matrix().to_4x4()
+                     @ Matrix.Diagonal(Vector((sz * rng.uniform(0.85, 1.15) / 2, sz * rng.uniform(0.7, 1.0) / 2,
+                                               sz * rng.uniform(0.5, 0.75) / 2, 1.0))))
+                bmesh.ops.create_icosphere(bm, subdivisions=1, radius=1.0, matrix=m)
+                count += 1
+    if count:
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        me = bpy.data.meshes.new(name)
+        bm.to_mesh(me)
+        me.materials.append(M.get("armour"))
+        ob = bpy.data.objects.new(name, me)
+        bpy.context.scene.collection.objects.link(ob)
+    bm.free()
+    return count
+
+
 def _area(ring) -> float:
     return 0.5 * sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]))
 
@@ -269,6 +321,22 @@ def build(manifest: dict[str, Any], folder: Path, sea: float, keep: tuple[float,
     """The modelled surroundings. ``keep`` is (x0, x1, y0, y1) of the works, left empty."""
     z, wet, r = heights(manifest, folder, sea)
     ground = build_ground(z, wet, r, keep, sea)
+    import bpy
+    k0, k1, k2, k3 = keep
+    cx, cy = (k0 + k1) / 2, (k2 + k3) / 2
+    reach = max(k1 - k0, k3 - k2) * 2.5 + 150
+    # armour stone along the shore near the works, where the camera sees it as stone
+    # (only on slopes that come up out of the water onto land: not on shallows out in the sea)
+    stones = boulders([bpy.data.objects["land"]], 1, 0.3,
+                      near=lambda x, y, zc, top: math.hypot(x - cx, y - cy) < reach and sea - 0.8 < zc < sea + 5.0,
+                      name="shore_armour")
+    # the breakwater the works stand against: all of it beside the works is armour stone
+    def by_works(x, y, zc, top):
+        dx = max(k0 - x, x - k1, 0.0)
+        dy = max(k2 - y, y - k3, 0.0)
+        return math.hypot(dx, dy) < 30.0 and zc > sea - 0.8
+    stones += boulders([bpy.data.objects["land"]], None, 0.45, seed=5, near=by_works, size=(1.0, 2.3),
+                       name="breakwater_armour_shore")
     feats = json.loads((folder / manifest["osm"]["file"]).read_text()) if "osm" in manifest else []
     counts = build_osm(feats, ground, wet, keep, sea)
-    return {"radius": r, "sea_share": round(float(wet.mean()), 2), **counts, "ground": ground}
+    return {"radius": r, "sea_share": round(float(wet.mean()), 2), **counts, "shore_stones": stones, "ground": ground}

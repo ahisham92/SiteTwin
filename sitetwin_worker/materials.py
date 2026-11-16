@@ -347,6 +347,9 @@ def get(name: str):
     elif name == "road_worn":
         # sun-bleached asphalt, as roads look from the air on a dry coast
         _noise_mix(tree, bsdf, (0.10, 0.10, 0.10), (0.17, 0.165, 0.16), scale=1.0, detail=10, rough=(0.75, 0.95), bump=0.15)
+    elif name == "armour":
+        # limestone armour stone: pale grey-beige, each face a little different, rough
+        _noise_mix(tree, bsdf, (0.24, 0.22, 0.19), (0.50, 0.47, 0.41), scale=0.9, detail=6, rough=(0.8, 1.0), bump=0.6)
     elif name == "land":
         # dry Levantine ground round a site: pale dust and stone, faint darker patches
         _noise_mix(tree, bsdf, (0.20, 0.15, 0.09), (0.33, 0.27, 0.18), scale=0.04, detail=10, rough=(0.85, 1.0), bump=0.25)
