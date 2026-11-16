@@ -94,8 +94,9 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str], start: d
     d.rectangle([bx0, by - int(4 * u), bx1, by], fill=(255, 255, 255, 60))
     d.rectangle([bx0, by - int(4 * u), bx0 + (bx1 - bx0) * prog, by], fill=(245, 165, 36, 255))
     if credits:
-        # right-aligned lines no wider than 60% of the frame, so nothing runs off the edge
-        f = _font(int(15 * u))
+        # right-aligned lines no wider than 60% of the frame, in a strip just above the caption
+        # band (inside it they ran over a long step line)
+        f = _font(int(14 * u))
         pieces = [p.strip() for c in credits for p in c.replace("; ", " · ").split(" · ") if p.strip()]
         lines, cur = [], ""
         for p in pieces:
@@ -107,11 +108,13 @@ def caption(path: Path, frame: int, tl, title: str, credits: list[str], start: d
                 cur = trial
         if cur:
             lines.append(cur)
-        step_h = int(19 * u)
-        lines = lines[: max(1, (box_h - int(30 * u)) // step_h)]
+        step_h = int(18 * u)
+        lines = lines[:4]
+        top = H - box_h - pad // 2 - len(lines) * step_h - int(6 * u)
+        d.rectangle([int(W * 0.38), top - int(4 * u), W, H - box_h - pad // 2], fill=(10, 16, 28, 90))
         for i, txt in enumerate(lines):
             tw = d.textlength(txt, font=f)
-            d.text((W - pad - tw, H - box_h + int(4 * u) + i * step_h), txt, font=f, fill=(220, 225, 235, 200))
+            d.text((W - pad - tw, top + i * step_h), txt, font=f, fill=(225, 230, 240, 215))
     im.save(path)
 
 
@@ -156,7 +159,7 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     # surroundings.py), wider, instead of Google's photo-real mesh
     modelled = os.environ.get("SITETWIN_SURROUNDINGS", "") == "model" and marine
     if modelled:
-        radius = max(radius, 1500)
+        radius = max(radius, float(os.environ.get("SITETWIN_SURROUNDINGS_RADIUS", 2500)))
     log(f"Fetching the surroundings of {lat:.5f}, {lon:.5f} (radius {radius:.0f} m)…")
     manifest = environment.gather(lat, lon, radius, out / "environment", intro=fly_in, google=not modelled)
     if modelled:

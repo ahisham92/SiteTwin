@@ -651,7 +651,15 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     machines = build_plant(elements, tl, line, objs, rng, sea)
     people = build_crews(elements, tl, line, machines, rng)
     clashes = S.check_clearance(people, machines, tl.frames)
-    elev, az = S.build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)
+    if around is not None:
+        # one steady morning light: the camera looks back south to the shore, and the sun of
+        # midday (south) would shine straight into it off the water; at nine it comes from the
+        # east-south-east, from the side, and the light no longer swings through the film
+        import datetime as _dt
+        when = (opts.when or _dt.datetime.now()).replace(hour=9, minute=0)
+        elev, az = S.build_light(manifest["lat"], manifest["lon"], when, 0, opts.fps)
+    else:
+        elev, az = S.build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)
     build_camera(fp, top, tl, line[2], sea)
     S._all_constant_hides()
     S.configure_render(opts, tl.frames, out_dir)
