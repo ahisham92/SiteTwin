@@ -2,9 +2,11 @@ name: Construction film (browser, free)
 
 # Makes a project's construction film exactly as the Video tab plays it in the browser
 # (sitetwin-film.js: three.js, the real ground and aerial photograph, the sea, the planner's
-# stages), on this runner's CPU: no Modal GPU, no AI, nothing to pay. It runs the web app with
-# the IFC, opens the film in headless Chromium and either saves stills or every frame, joined
-# into an MP4. Everything lands on the sample-films branch.
+# stages), on GitHub's CPUs: no Modal GPU, no AI, nothing to pay. It runs the web app with
+# the IFC, opens the film in headless Chromium and either saves stills or every frame. A whole
+# film is made in six parts side by side (one browser over thousands of frames stalls the
+# machine, and six machines take a sixth of the time), then joined into one MP4. Everything
+# lands on the sample-films branch.
 
 on:
   workflow_dispatch:
@@ -21,9 +23,13 @@ permissions:
   contents: write
 
 jobs:
-  film:
+  part:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        part: ${{ fromJSON(inputs.video == 'yes' && '[0,1,2,3,4,5]' || '[0]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -58,22 +64,52 @@ jobs:
           LENGTH: ${{ inputs.length }}
           TIMES: ${{ inputs.times }}
           VIDEO: ${{ inputs.video }}
+          PART: ${{ matrix.part }}
         run: |
+          mkdir -p out
           if [ "$VIDEO" = yes ]; then
-            OUT=frames FPS=24 node tools/film_stills.js
-            ffmpeg -loglevel error -framerate 24 -i frames/frame_%05d.jpg -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart film.mp4
+            # this machine's sixth of the frames, in pieces of 300, each in a fresh browser; niced so
+            # the runner itself keeps some CPU
+            N=$((LENGTH * 24)); FROM=$((N * PART / 6)); TO=$((N * (PART + 1) / 6))
+            for a in $(seq $FROM 300 $((TO - 1))); do
+              b=$((a + 300)); if [ $b -gt $TO ]; then b=$TO; fi
+              OUT=frames FPS=24 FROM=$a TO=$b nice -n 10 node tools/film_stills.js
+            done
+            ffmpeg -loglevel error -framerate 24 -start_number $FROM -i frames/frame_%05d.jpg -frames:v $((TO - FROM)) \
+              -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -r 24 "out/part$PART.mp4"
           else
             OUT=stills node tools/film_stills.js
+            mv stills/*.jpg out/
           fi
-      - name: Keep it on sample-films
+      - uses: actions/upload-artifact@v4
+        with:
+          name: film-part-${{ matrix.part }}
+          path: out/
+          retention-days: 2
+
+  keep:
+    needs: part
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: film-part-*
+          merge-multiple: true
+          path: parts
+      - name: Join the parts and keep them on sample-films
         env:
           REPO: ${{ github.repository }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN: ${{ github.run_id }}
         run: |
           mkdir out
-          [ -f film.mp4 ] && mv film.mp4 "out/browser-film-$RUN.mp4"
-          if [ -d stills ]; then for f in stills/*.jpg; do mv "$f" "out/browser-$RUN-$(basename "$f")"; done; fi
+          if ls parts/part*.mp4 > /dev/null 2>&1; then
+            sudo apt-get -qq install -y ffmpeg > /dev/null
+            for f in $(ls parts/part*.mp4 | sort -V); do echo "file '$PWD/$f'"; done > list.txt
+            ffmpeg -loglevel error -f concat -safe 0 -i list.txt -c copy -movflags +faststart "out/browser-film-$RUN.mp4"
+            ffprobe -v error -show_entries format=duration -of csv=p=0 "out/browser-film-$RUN.mp4"
+          fi
+          for f in parts/*.jpg; do if [ -f "$f" ]; then mv "$f" "out/browser-$RUN-$(basename "$f")"; fi; done
           cd out
           git init -q -b sample-films
           git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
