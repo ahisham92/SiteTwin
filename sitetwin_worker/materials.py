@@ -312,11 +312,49 @@ def get(name: str):
         b.inputs["Strength"].default_value = 0.08
         tree.links.new(wave.outputs["Fac"], b.inputs["Height"])
         tree.links.new(b.outputs["Normal"], bsdf.inputs["Normal"])
+    elif name == "sea_clear":
+        # the open sea seen from above: deep blue with a soft sheen, clear enough near the
+        # surface to show piles going down into it
+        bsdf.inputs["Base Color"].default_value = (0.012, 0.05, 0.085, 1)
+        bsdf.inputs["Roughness"].default_value = 0.12
+        bsdf.inputs["Specular IOR Level"].default_value = 0.35
+        n = tree.nodes
+        tc = n.new("ShaderNodeTexCoord")
+        wave = n.new("ShaderNodeTexNoise")
+        wave.inputs["Scale"].default_value = 0.5
+        wave.inputs["Detail"].default_value = 8
+        tree.links.new(tc.outputs["Object"], wave.inputs["Vector"])
+        bmp = n.new("ShaderNodeBump")
+        bmp.inputs["Strength"].default_value = 0.12
+        tree.links.new(wave.outputs["Fac"], bmp.inputs["Height"])
+        tree.links.new(bmp.outputs["Normal"], bsdf.inputs["Normal"])
+        out = next(nd for nd in n if nd.type == "OUTPUT_MATERIAL")
+        clear = n.new("ShaderNodeBsdfTransparent")
+        clear.inputs["Color"].default_value = (0.35, 0.62, 0.66, 1)
+        mix = n.new("ShaderNodeMixShader")
+        mix.inputs["Fac"].default_value = 0.3
+        tree.links.new(bsdf.outputs["BSDF"], mix.inputs[1])
+        tree.links.new(clear.outputs["BSDF"], mix.inputs[2])
+        tree.links.new(mix.outputs["Shader"], out.inputs["Surface"])
+    elif name == "sea_bed":
+        _noise_mix(tree, bsdf, (0.03, 0.05, 0.05), (0.06, 0.08, 0.07), scale=0.2, rough=(0.9, 1.0), bump=0.0)
     elif name == "facade_real":
         _facade_real(tree, bsdf)
     elif name == "road_paint":
         bsdf.inputs["Base Color"].default_value = (0.82, 0.82, 0.78, 1)
         bsdf.inputs["Roughness"].default_value = 0.7
+    elif name == "road_worn":
+        # sun-bleached asphalt, as roads look from the air on a dry coast
+        _noise_mix(tree, bsdf, (0.10, 0.10, 0.10), (0.17, 0.165, 0.16), scale=1.0, detail=10, rough=(0.75, 0.95), bump=0.15)
+    elif name == "land":
+        # dry Levantine ground round a site: pale dust and stone, faint darker patches
+        _noise_mix(tree, bsdf, (0.20, 0.15, 0.09), (0.33, 0.27, 0.18), scale=0.04, detail=10, rough=(0.85, 1.0), bump=0.25)
+    elif name == "greenhouse":
+        # white plastic sheeting over light frames
+        _noise_mix(tree, bsdf, (0.70, 0.72, 0.72), (0.82, 0.84, 0.84), scale=0.5, rough=(0.35, 0.6), bump=0.05)
+    elif name == "tank":
+        # white-painted steel tanks
+        _noise_mix(tree, bsdf, (0.72, 0.72, 0.70), (0.80, 0.80, 0.78), scale=0.4, rough=(0.4, 0.6), bump=0.02)
     elif name == "facade":              # the neighbours: rendered plaster and stone
         _noise_mix(tree, bsdf, (0.62, 0.58, 0.52), (0.78, 0.75, 0.70), scale=0.08, rough=(0.7, 0.9), bump=0.1)
     elif name == "facade_dark":

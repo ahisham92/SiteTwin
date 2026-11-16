@@ -152,8 +152,16 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
             e.verts[:, 2] -= float(site["sea_level"])
 
     stage("surroundings")
+    # SITETWIN_SURROUNDINGS=model: the place rebuilt from map data in the model's own style (see
+    # surroundings.py), wider, instead of Google's photo-real mesh
+    modelled = os.environ.get("SITETWIN_SURROUNDINGS", "") == "model" and marine
+    if modelled:
+        radius = max(radius, 1500)
     log(f"Fetching the surroundings of {lat:.5f}, {lon:.5f} (radius {radius:.0f} m)…")
-    manifest = environment.gather(lat, lon, radius, out / "environment", intro=fly_in)
+    manifest = environment.gather(lat, lon, radius, out / "environment", intro=fly_in, google=not modelled)
+    if modelled:
+        manifest = dict(manifest, modelled=True, credits=[c for c in manifest.get("credits", [])
+                                                          if not c.startswith("Imagery")])
     for k, why in manifest.get("missing", {}).items():
         log(f"  no {k}: {why}")
     if manifest.get("google"):                     # Google's mesh replaces the terrain, imagery and OSM
