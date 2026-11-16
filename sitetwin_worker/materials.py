@@ -315,9 +315,10 @@ def get(name: str):
     elif name == "sea_clear":
         # the open sea seen from above: deep blue with a soft sheen, clear enough near the
         # surface to show piles going down into it
+        # rough enough that the sun is a soft sheen on it, not a blinding spot
         bsdf.inputs["Base Color"].default_value = (0.012, 0.05, 0.085, 1)
-        bsdf.inputs["Roughness"].default_value = 0.12
-        bsdf.inputs["Specular IOR Level"].default_value = 0.35
+        bsdf.inputs["Roughness"].default_value = 0.32
+        bsdf.inputs["Specular IOR Level"].default_value = 0.12
         n = tree.nodes
         tc = n.new("ShaderNodeTexCoord")
         wave = n.new("ShaderNodeTexNoise")
