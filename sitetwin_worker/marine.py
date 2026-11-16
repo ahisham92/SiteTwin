@@ -146,6 +146,10 @@ def build_ground(ground: list[Element], keep: tuple[float, float, float, float])
         o = bpy.data.objects.new("ground_model", me)
         bpy.context.scene.collection.objects.link(o)
         out.append(o)
+    if out:
+        # the breakwater's slopes as armour stone, boulder by boulder (slot 0 is the rock)
+        from .surroundings import boulders
+        boulders(out, 0, 0.35, seed=11, size=(1.0, 2.2), name="breakwater_armour")
     return out
 
 
