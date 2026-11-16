@@ -1,7 +1,8 @@
 // Opens the IFC for SiteTwin's 3D preview, off the page so the page never freezes.
 // Asked {url, base, steps: {expressID: step}}, it reads the model with web-ifc (from `base`)
 // and sends back one merged shape per build step: positions (metres, y up, around the model's
-// first placement) and normals. An element in no step is sent with step 0.
+// first placement) and normals. An element in no step is sent with step 0. Asked with `each`
+// (the construction film), it sends one shape per element instead, with its id and step.
 
 const say = (msg, transfer) => self.postMessage(msg, transfer || []);
 
@@ -69,7 +70,7 @@ class Bucket {
 }
 
 self.onmessage = async (ev) => {
-  const { url, base, steps } = ev.data;
+  const { url, base, steps, each } = ev.data;
   try {
     const started = import(base + 'web-ifc-api.js');
     const bytes = await download(url);
@@ -87,8 +88,9 @@ self.onmessage = async (ev) => {
     const total = Object.keys(steps).length || 1;
     api.StreamAllMeshes(modelID, (flat) => {
       const step = steps[flat.expressID] || 0;
-      if (!buckets.has(step)) buckets.set(step, new Bucket());
-      const bucket = buckets.get(step);
+      const key = each ? flat.expressID : step;
+      if (!buckets.has(key)) buckets.set(key, new Bucket());
+      const bucket = buckets.get(key);
       const placed = flat.geometries;
       for (let i = 0; i < placed.size(); i++) {
         const pg = placed.get(i);
@@ -104,9 +106,10 @@ self.onmessage = async (ev) => {
       if (done % 50 === 0) say({ type: 'progress', stage: 'shapes', done, total });
     });
     api.CloseModel(modelID);
-    for (const [step, bucket] of buckets) {
+    for (const [key, bucket] of buckets) {
       const part = bucket.take();
-      say({ type: 'part', step, ...part }, [part.positions.buffer, part.normals.buffer]);
+      const who = each ? { id: key, step: steps[key] || 0 } : { step: key };
+      say({ type: 'part', ...who, ...part }, [part.positions.buffer, part.normals.buffer]);
     }
     say({ type: 'done', origin: origin || [0, 0, 0] });
   } catch (err) {

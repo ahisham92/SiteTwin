@@ -97,6 +97,12 @@ def tile_url(lat: float | None, lon: float | None, zoom: int = 17) -> str | None
     return f"https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{zoom}/{y}/{x}"
 
 
+def _steps_file(summary) -> dict[str, Any]:
+    """What the 3D view needs beside the model: each step's elements, and for a staged model
+    how each element comes and goes in the film."""
+    return {"ids": {str(k): v for k, v in summary.step_ids.items()}, "film": summary.film}
+
+
 def create_app(store: Store | None = None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_MODEL_MB * 1024 * 1024
@@ -301,9 +307,10 @@ def create_app(store: Store | None = None) -> Flask:
             abort(404)
         if not path.exists():                            # a model uploaded before steps were kept
             summary = ifc.summarise_file(app.store.project_folder(pid) / "model.ifc")
-            path.write_text(json.dumps({str(k): v for k, v in summary.step_ids.items()}))
-        ids = json.loads(path.read_text())
-        return jsonify(steps=(project["model_summary"] or {}).get("sequence", []), ids=ids)
+            path.write_text(json.dumps(_steps_file(summary)))
+        kept = json.loads(path.read_text())
+        ids, film = (kept["ids"], kept.get("film") or {}) if "ids" in kept else (kept, {})
+        return jsonify(steps=(project["model_summary"] or {}).get("sequence", []), ids=ids, film=film)
 
     @app.post("/projects/<int:pid>/model")
     def upload_model(pid: int):
@@ -325,7 +332,7 @@ def create_app(store: Store | None = None) -> Flask:
         else:
             upload.save(path)
         summary = ifc.summarise_file(path)
-        (folder / "steps.json").write_text(json.dumps({str(k): v for k, v in summary.step_ids.items()}))
+        (folder / "steps.json").write_text(json.dumps(_steps_file(summary)))
         app.store.set_model(who["id"], pid, upload.filename, summary.as_dict())
         return done_or_back(pid)
 

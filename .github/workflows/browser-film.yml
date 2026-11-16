@@ -1,0 +1,82 @@
+name: Construction film (browser, free)
+
+# Makes a project's construction film exactly as the Video tab plays it in the browser
+# (sitetwin-film.js: three.js, the real ground and aerial photograph, the sea, the planner's
+# stages), on this runner's CPU: no Modal GPU, no AI, nothing to pay. It runs the web app with
+# the IFC, opens the film in headless Chromium and either saves stills or every frame, joined
+# into an MP4. Everything lands on the sample-films branch.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ifc: {description: "IFC in the repository (.ifc or .ifc.gz)", default: "samples/sibline.ifc.gz"}
+      name: {description: "Project name, shown in the captions", default: "Sibline Port – deck on piles (PK1 + PK2)"}
+      lat: {description: "Latitude (empty: from the model)", default: ""}
+      lon: {description: "Longitude (empty: from the model)", default: ""}
+      length: {description: "Film length in seconds (120, 150 or 180)", default: "150"}
+      video: {description: "Make the whole film (yes) or only stills (no)", default: "no"}
+      times: {description: "Stills at these seconds", default: "2,15,30,45,60,75,90,105,120,135,148"}
+
+permissions:
+  contents: write
+
+jobs:
+  film:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        run: |
+          pip install -q -r requirements.txt
+          npm install --no-save --silent playwright@1.49.1 web-ifc@0.0.66
+          npx playwright install --with-deps chromium > /dev/null
+          sudo apt-get -qq install -y ffmpeg > /dev/null
+      - name: Run SiteTwin with the model
+        env:
+          IFC: ${{ inputs.ifc }}
+          NAME: ${{ inputs.name }}
+          LAT: ${{ inputs.lat }}
+          LON: ${{ inputs.lon }}
+        run: |
+          SITETWIN_DATA_DIR=$RUNNER_TEMP/data SITETWIN_DEV_ACCOUNT=film PORT=5055 nohup python -m sitetwin_app > app.log 2>&1 &
+          for i in $(seq 30); do curl -sf localhost:5055/ > /dev/null && break; sleep 1; done
+          curl -sf -o /dev/null -X POST --data-urlencode "name=$NAME" localhost:5055/projects
+          curl -sf -o /dev/null -F "model=@$IFC;filename=$(basename "$IFC")" localhost:5055/projects/1/model
+          if [ -n "$LAT" ] && [ -n "$LON" ]; then
+            curl -sf -o /dev/null -H 'Content-Type: application/json' -d "{\"latitude\": $LAT, \"longitude\": $LON}" localhost:5055/projects/1/location
+          fi
+          curl -sf localhost:5055/api/projects/1 | python -c "import json,sys; p=json.load(sys.stdin)['project']; print(p['name'], p['latitude'], p['longitude'])"
+      - name: Film it
+        env:
+          LENGTH: ${{ inputs.length }}
+          TIMES: ${{ inputs.times }}
+          VIDEO: ${{ inputs.video }}
+        run: |
+          if [ "$VIDEO" = yes ]; then
+            OUT=frames FPS=24 node tools/film_stills.js
+            ffmpeg -loglevel error -framerate 24 -i frames/frame_%05d.jpg -c:v libx264 -preset slow -crf 20 -pix_fmt yuv420p -movflags +faststart film.mp4
+          else
+            OUT=stills node tools/film_stills.js
+          fi
+      - name: Keep it on sample-films
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN: ${{ github.run_id }}
+        run: |
+          mkdir out
+          [ -f film.mp4 ] && mv film.mp4 "out/browser-film-$RUN.mp4"
+          if [ -d stills ]; then for f in stills/*.jpg; do mv "$f" "out/browser-$RUN-$(basename "$f")"; done; fi
+          cd out
+          git init -q -b sample-films
+          git config user.name "SiteTwin" && git config user.email "sitetwin@users.noreply.github.com"
+          git remote add origin "https://x-access-token:$TOKEN@github.com/$REPO.git"
+          git fetch -q origin sample-films && git reset -q --soft FETCH_HEAD || true
+          git add -- . && git commit -qm "Browser film from run $RUN" && git push -q origin HEAD:sample-films

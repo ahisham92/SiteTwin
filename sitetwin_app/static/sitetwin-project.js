@@ -8,6 +8,7 @@
   var STATE_URL = me.dataset.stateUrl;
   var ESTIMATE_URL = me.dataset.estimateUrl;
   var VIEWER_JS = me.dataset.viewerJs;
+  var FILM_JS = me.dataset.filmJs;
   var state = JSON.parse(document.getElementById('state').textContent);
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
@@ -52,6 +53,7 @@
     if (push) history.replaceState(null, '', '#' + key);
     if (key === 'location') openMap();
     if (key === 'sequence') openViewer();
+    if (key === 'video') openFilm();
   }
   $$('.step').forEach(function (s) { $('button', s).addEventListener('click', function () { show(s.dataset.step, true); }); });
 
@@ -202,6 +204,19 @@
     viewer = 'opening';
     import(VIEWER_JS).then(function (mod) { viewer = mod.open(el, { play: $('[data-play]'), scrub: $('[data-scrub]'), word: $('[data-scrub-word]'), list: $('[data-step-list]') }); })
       .catch(function (err) { viewer = null; $('[data-viewer-msg]').textContent = 'The 3D preview could not open: ' + err.message; });
+  }
+
+  // ---- 4. the construction film, played and recorded in the browser -------------
+  var film = null;
+  function openFilm() {
+    var el = $('[data-film]');
+    if (!el || film) return;
+    film = 'opening';
+    import(FILM_JS).then(function (mod) {
+      film = mod.open(el, { play: $('[data-film-play]'), record: $('[data-film-record]'), length: $('[data-film-length]'),
+                            scrub: $('[data-film-scrub]'), note: $('[data-film-note]') });
+      window.sitetwinFilm = film;
+    }).catch(function (err) { film = null; $('[data-film-msg]').textContent = 'The film could not open: ' + err.message; });
   }
 
   // ---- 4. the film -------------------------------------------------------------

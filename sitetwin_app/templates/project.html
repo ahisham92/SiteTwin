@@ -145,6 +145,29 @@
 {# ---- 4. Video -------------------------------------------------------- #}
 <section class="pane" id="pane-video" data-pane="video">
   <div class="stack">
+    {% if m and m['sequence'] and p['latitude'] is not none %}
+    <div class="card" data-film-free>
+      <div class="card-head"><div><h2>The construction film</h2>
+        <p class="small muted" style="margin-top:2px">Played here in your browser, free: the model in its real place, with the ground, the aerial photograph, {{ 'the sea, ' if m.get('setting') == 'marine' }}the sky and the plant at work, built in the order of the sequence. Record it to save it as a video.</p></div></div>
+      <div class="card-body stack">
+        <div class="viewer film-view" data-film data-model="{{ url_for('model_file', pid=p['id']) }}" data-steps="{{ url_for('steps', pid=p['id']) }}"
+             data-web-ifc="https://cdn.jsdelivr.net/npm/web-ifc@0.0.66/" data-lat="{{ p['latitude'] }}" data-lon="{{ p['longitude'] }}"
+             data-title="{{ p['name'] }}" data-file="{{ p['name'] }}">
+          <div class="viewer-msg" data-film-msg><span>The film opens when you come to this tab.</span></div>
+          <div class="film-hud hidden" data-film-hud></div>
+        </div>
+        <div class="player" style="flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" data-film-play disabled>▶ Play</button>
+          <button class="btn btn-ghost btn-sm" data-film-record disabled>● Record video</button>
+          <select class="btn btn-ghost btn-sm" data-film-length disabled aria-label="Length">
+            <option value="120">2 min</option><option value="150" selected>2½ min</option><option value="180">3 min</option></select>
+          <input type="range" min="0" max="1000" value="0" data-film-scrub disabled style="flex:1;min-width:160px">
+        </div>
+        <p class="small muted" data-film-note>Recording plays the whole film once and saves it to your downloads (MP4 in Chrome, Edge and Safari).</p>
+      </div>
+    </div>
+    {% endif %}
+
     <div class="card {{ '' if job and job['status'] in ('queued','running') else 'hidden' }}" data-live-card>
       <div class="card-head"><div><h2><span class="pulse"></span><span data-live-title>Making the film</span></h2>
         <p class="small muted" style="margin-top:2px" data-live-sub></p></div>
@@ -178,8 +201,8 @@
     </div>
 
     <div class="card" data-make-card>
-      <div class="card-head"><div><h2 data-make-title>{{ 'Make it again' if done else 'Make the film' }}</h2>
-        <p class="small muted" style="margin-top:2px">Rendered in the cloud on GPUs that run only while your film is made. Leave the page open to watch it come together, or come back later.</p></div></div>
+      <div class="card-head"><div><h2 data-make-title>{{ 'Make it again' if done else 'Make it real (GPU render)' }}</h2>
+        <p class="small muted" style="margin-top:2px">A later step: rendered in the cloud on GPUs, which costs GPU time. Leave the page open to watch it come together, or come back later.</p></div></div>
       <div class="card-body">
         {% if p['model_name'] and p['latitude'] is not none %}
         <form method="post" action="{{ url_for('render_video', pid=p['id']) }}" class="stack" data-render>
@@ -228,5 +251,6 @@
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
 <script src="{{ url_for('static', filename='sitetwin-project.js') }}" data-pid="{{ p['id'] }}"
         data-state-url="{{ url_for('project_state', pid=p['id']) }}" data-estimate-url="{{ url_for('project_estimate', pid=p['id']) }}"
-        data-viewer-js="{{ url_for('static', filename='sitetwin-viewer.js') }}"></script>
+        data-viewer-js="{{ url_for('static', filename='sitetwin-viewer.js') }}"
+        data-film-js="{{ url_for('static', filename='sitetwin-film.js') }}"></script>
 {% endblock %}
