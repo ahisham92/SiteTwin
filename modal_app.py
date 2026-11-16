@@ -210,11 +210,20 @@ def dispatch() -> int:
     """Hand every waiting job to its own handler."""
     from sitetwin_worker.serve import claim
 
+    import urllib.error
+
     site = _site()
     n = 0
-    while (got := claim(site)) is not None:
-        handle_job.spawn(got)
-        n += 1
+    try:
+        while (got := claim(site)) is not None:
+            handle_job.spawn(got)
+            n += 1
+    except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+        # the website was briefly unreachable (PythonAnywhere answers 502 now and then): this runs
+        # again in two minutes, so it is a note in the log, not a failure
+        if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
+            raise
+        print(f"website not reachable just now ({exc}); trying again at the next run")
     return n
 
 
