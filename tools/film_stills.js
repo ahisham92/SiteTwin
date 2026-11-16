@@ -40,10 +40,14 @@ const TIMES = (process.env.TIMES || '2,20,45,70,95,120,140').split(',').map(Numb
     fs.writeFileSync(path.join(OUT, name), Buffer.from(url.split(',')[1], 'base64'));
   };
   if (FPS) {
+    // FROM..TO (frame numbers) makes one part of the film, so a long film can be made in parts,
+    // each in a fresh browser: one browser over thousands of frames grows until the machine stalls
     const n = Math.round(LENGTH * FPS);
-    for (let i = 0; i < n; i++) {
+    const from = Number(process.env.FROM || 0), to = Math.min(n, Number(process.env.TO || n));
+    const t0 = Date.now();
+    for (let i = from; i < to; i++) {
       await save(i / FPS, `frame_${String(i).padStart(5, '0')}.jpg`);
-      if (i % 240 === 0) console.log(`frame ${i} of ${n}`);
+      if (i % 120 === 0) console.log(`frame ${i} of ${n} (${((Date.now() - t0) / 1000 / Math.max(1, i - from)).toFixed(2)} s a frame)`);
     }
   } else {
     for (const t of TIMES) { await save(t, `t${String(t).padStart(3, '0')}.jpg`); console.log('still', t); }
