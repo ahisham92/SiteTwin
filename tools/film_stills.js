@@ -22,6 +22,14 @@ const TIMES = (process.env.TIMES || '2,20,45,70,95,120,140').split(',').map(Numb
       r.fulfill({ status: 200, body: fs.readFileSync(f), headers: { 'content-type': f.endsWith('.wasm') ? 'application/wasm' : 'application/javascript', 'access-control-allow-origin': '*' } });
     });
   }
+  if (process.env.TILES) {             // aerial tiles from a local folder ({y}_{x}.jpg) when the imagery server is not reachable
+    await p.route((u) => u.href.includes('World_Imagery'), (r) => {
+      const [y, x] = new URL(r.request().url()).pathname.split('/').slice(-2);
+      const f = path.join(process.env.TILES, `${y}_${x}.jpg`);
+      if (!fs.existsSync(f)) return r.fulfill({ status: 404 });
+      r.fulfill({ status: 200, body: fs.readFileSync(f), headers: { 'content-type': 'image/jpeg', 'access-control-allow-origin': '*' } });
+    });
+  }
   p.on('pageerror', (e) => console.log('pageerror:', String(e).slice(0, 500)));
   await p.goto(`${process.env.SITE || 'http://localhost:5055'}/projects/${process.env.PROJECT || 1}#video`, { waitUntil: 'domcontentloaded' });
   await p.waitForFunction(() => window.sitetwinFilm && window.sitetwinFilm.ready, null, { timeout: 1800000, polling: 2000 });
