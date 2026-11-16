@@ -16,8 +16,8 @@ jobs:
             curl -sf --data-urlencode "data=$Q" "$u" -o out/osm-sibline.json && break
           done
           ls -la out; head -c 300 out/osm-sibline.json
-          curl -s -o /dev/null -w "cors: %{http_code}\n" -H "Origin: https://example.com" -I https://overpass-api.de/api/status
-          curl -s -D - -o /dev/null -H "Origin: https://example.com" --data-urlencode "data=[out:json];node(1);out;" https://overpass-api.de/api/interpreter | grep -i access-control
+          curl -s -o /dev/null -w "cors: %{http_code}\n" -H "Origin: https://example.com" -I https://overpass-api.de/api/status || true
+          curl -s -D - -o /dev/null -H "Origin: https://example.com" --data-urlencode "data=[out:json];node(1);out;" https://overpass-api.de/api/interpreter | grep -i access-control || true
           cd out && git init -q -b sample-films && git config user.name SiteTwin && git config user.email sitetwin@users.noreply.github.com
           git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git"
           git fetch -q origin sample-films && git reset -q --soft FETCH_HEAD || true
