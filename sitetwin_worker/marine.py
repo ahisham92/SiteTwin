@@ -296,40 +296,57 @@ def land_line(built: list[Element], ground: list[Element], sea: float) -> tuple[
     return x, max(z, sea + 0.8), side
 
 
-def barge(name: str = "barge", length: float = 40.0, width: float = 14.0):
-    """A flat-top spud barge, its origin on the middle of its deck, long axis along local x:
-    a red hull with a dark deck, a kerb round the edge and a spud leg at each corner."""
-    hx, hy = length / 2, width / 2
-    p: list = [("box", "steel_red", (0, 0, -1.3), (length, width, 2.5), 0),
-               ("box", "dark_metal", (0, 0, -0.04), (length - 0.3, width - 0.3, 0.1), 0)]
-    for sx in (-1, 1):
-        p.append(("box", "steel_red", (0, sx * (hy - 0.15), 0.2), (length, 0.3, 0.45), 0))
-        p.append(("box", "steel_red", (sx * (hx - 0.15), 0, 0.2), (0.3, width, 0.45), 0))
-        for sy in (-1, 1):
-            p.append(("cyl", "dark_metal", (sx * (hx - 2.0), sy * (hy - 1.4), 3.0), (1.0, 1.0, 16.0), 0))
-    return E._build(name, p)
-
-
 def build_plant(elements: list[Element], tl: Timeline, line: tuple[float, float, int], objs: dict,
                 rng: random.Random, sea: float) -> list[L.Machine]:
-    """All plant works from the water, on barges along the open face of the berth, never on
-    the breakwater: the crawler crane on a crane barge (it lifts, breaks out and drives the new
-    piles with a hammer on its hook), the excavator on a work barge, the pump and a mixer on a
-    concrete barge, the precast on a flatbed on the crane barge's deck, and a work boat at the
-    pile repairs. Returns the machines' ways (for keeping people clear)."""
+    """All plant works from the land at the root and then from the new deck, never from the
+    breakwater: the structure is built end-on, bay by bay (see sequence.plan_staged), and for
+    each bay the plant stands behind it, on the bay finished before it (or the land at the root
+    for the first). The crawler crane lifts, breaks out and drives the new piles with a hammer on
+    its hook, from the deck's sea-side lane; the excavator, pump, mixer and flatbed keep to its
+    land-side lane. A work boat does the pile repairs from the water. Returns the machines' ways
+    (for keeping people clear)."""
+    import bpy
     by = {e.guid: e for e in elements}
-    lx, lz, side = line
-    out = -side                                            # the open water side: +1 east / -1 west
     machines: list[L.Machine] = []
     built = [e for e in elements if e.how != "ground"]
+    ground = [e for e in elements if e.how == "ground"]
+    lx, lz, side = line
+    out = -side
     fp = footprint(built)
     y_lo, y_hi = float(min(e.lo[1] for e in built)), float(max(e.hi[1] for e in built))
-    edge = fp[2] if out > 0 else fp[0]                     # the berth face
-    deck = sea + 1.5                                       # a barge's deck level
-    bx = edge + out * 9.0                                  # a barge alongside the face
+    deck = [e for e in built if e.how in ("cast", "lift") and e.hi[2] > sea + 1.0]
+    dx0 = float(min(e.lo[0] for e in deck)) if deck else fp[0]
+    dx1 = float(max(e.hi[0] for e in deck)) if deck else fp[2]
+    xm = (dx0 + dx1) / 2
+    sea_lane = (xm + 2.0, dx1 - 4.0) if out > 0 else (dx0 + 4.0, xm - 2.0)
+    land_x = (dx0 + xm) / 2 if out > 0 else (xm + dx1) / 2
+    land = bpy.data.objects.get("land")
 
-    def clamp_y(y: float) -> float:
-        return min(y_hi - 4.0, max(y_lo + 22.0, y))        # clear of the shore at the root
+    def surface(x: float, y: float) -> float:
+        """What plant stands on there: the new deck's top, the model's ground, or the land."""
+        z = ground_level(ground, x, y, sea - 50.0)
+        for e in deck:
+            if e.lo[0] <= x <= e.hi[0] and e.lo[1] <= y <= e.hi[1]:
+                z = max(z, float(e.hi[2]))
+        if land is not None:
+            hit, loc, *_ = land.ray_cast((x, y, 200.0), (0.0, 0.0, -1.0))
+            if hit:
+                z = max(z, float(loc.z))
+        return z if z > sea - 49.0 else sea + 2.5
+
+    # the bays, from the steps' captions ("Bay i of N")
+    def bay(st) -> tuple[int, int]:
+        lab = st.storey
+        if lab.startswith("Bay "):
+            i, n = lab[4:].split(" \u00b7 ")[0].split(" of ")
+            return int(i) - 1, int(n)
+        return 0, 1
+
+    def stand(st) -> tuple[float, float]:
+        """The y range plant stands in for a step: the last 20 m before its bay."""
+        i, n = bay(st)
+        start = y_lo + (y_hi - y_lo) * i / n
+        return start - 22.0, start - 5.0
 
     def front(step, f: int) -> tuple[float, float, float] | None:
         """The element being worked on in a step at frame f: (x, y, top)."""
@@ -350,173 +367,111 @@ def build_plant(elements: list[Element], tl: Timeline, line: tuple[float, float,
         c = cur.centre
         return float(c[0]), float(c[1]), float(cur.hi[2])
 
-    def follow(st, offset: float = 0.0, every: int = 6, hop: float = 10.0) -> list[tuple[int, float]]:
-        """A barge's y through a step: it warps along the face in hops after the work."""
-        keys, last = [], None
-        for f in range(st.start, st.end + 1, every):
-            tgt = front(st, f)
-            y = clamp_y((tgt[1] if tgt else y_lo + 30.0) + offset)
-            if last is not None and abs(y - last) < hop:
-                y = last
-            last = y
-            keys.append((f, y))
-        return keys
-
-    def on_barge(obj, st, keys, x: float, dy: float = 0.0, hdg: float = math.pi / 2, kind: str = "", r: float = 4.0):
-        mk = [(f, x, y + dy, hdg, deck) for f, y in keys]
+    def park(obj, st, x: float, y: float, hdg: float, kind: str, r: float):
+        z = surface(x, y)
+        keys = [(st.start, x, y, hdg, z), (st.end, x, y, hdg, z)]
         S._visible(obj, st.start, st.end, tl.frames)
-        S._apply_keys(obj, mk)
-        if kind:
-            machines.append(L.Machine(kind, r, mk))
-        return mk
+        S._apply_keys(obj, keys)
+        machines.append(L.Machine(kind, r, keys))
 
-    # --- the crane barge: the crawler crane slews and luffs to each lift; the barge warps along
+    # --- the crawler crane: in the sea-side lane behind the bay, slewing to each lift
     cr_steps = [st for st in tl.steps if "crawler_crane" in st.plant]
-    crane_y: dict[int, float] = {}
     if cr_steps:
         s, e = cr_steps[0].start, cr_steps[-1].end
-        cx = bx - out * 3.0                                # its crane on the berth side of the deck
         real = E._asset("crawler_crane", 40.0)
-        hull = barge("crane_barge", 44.0, 16.0)
         hammer = E._build("pile_hammer", [("cyl", "dark_metal", (0, 0, 0), (1.1, 1.1, 5.0), 0),
                                            ("box", "drum_orange", (0, 0, 2.2), (1.4, 1.4, 0.6), 0)])
         hammer.location = (0, 0, -500)
         hammer.keyframe_insert("location", frame=0)
         piling = [st for st in cr_steps if st.how == "drive"]
-
-        def target(f: int, last):
-            st = next((t for t in cr_steps if t.start <= f < t.end), None)
-            tgt = front(st, f) if st is not None else None
-            return tgt if tgt is not None else (last or (edge - out * 6.0, clamp_y(y_lo + 30), deck + 3.0))
-
+        line_obj = E._build("crawler_line", [("cyl8", "dark_metal", (0, 0, -0.5), (0.04, 0.04, 1.0), 0)])
+        block = E._build("crawler_block", [("box", "drum_orange", (0, 0, -0.4), (0.6, 0.4, 0.8), 0),
+                                           ("cyl", "dark_metal", (0, 0, -1.0), (0.18, 0.18, 0.4), 0)])
         if real is not None:
             tip = _tip(real)
-            reach = max(8.0, tip[0])
-            print(f"  crane barge: reach {reach:.1f} m from x {cx:.1f}")
-            line_obj = E._build("crawler_line", [("cyl8", "dark_metal", (0, 0, -0.5), (0.04, 0.04, 1.0), 0)])
-            block = E._build("crawler_block", [("box", "drum_orange", (0, 0, -0.4), (0.6, 0.4, 0.8), 0),
-                                               ("cyl", "dark_metal", (0, 0, -1.0), (0.18, 0.18, 0.4), 0)])
-            for o in (real, line_obj, block, hull):
-                S._visible(o, s, e, tl.frames)
-            keys, hk, prev_h, last, by_ = [], [], None, None, None
-            for f in range(s, e + 1, 3):
-                tgt = target(f, last)
-                last = tgt
-                dx = tgt[0] - cx
-                dy = math.sqrt(max(0.0, reach * reach - dx * dx))
-                want = clamp_y(tgt[1] - dy)
-                if by_ is None or abs(want - by_) > 8.0:     # the barge warps along in hops
-                    by_ = want
-                crane_y[f] = by_
-                h = math.atan2(tgt[1] - by_, dx)
-                h = h if prev_h is None else L.unwrap(prev_h, h)
-                prev_h = h
-                keys.append((f, cx, by_, h, deck))
-                hk.append((f, cx + out * 3.0, by_, math.pi / 2, deck))
-                tx_, ty_ = cx + math.cos(h) * tip[0], by_ + math.sin(h) * tip[0]
-                tip_z = deck + tip[1]
-                hook_z = max(tgt[2] + 3.5, deck + 2.0)
-                drive_now = any(p.start <= f < p.end for p in piling)
-                if drive_now:
-                    hook_z = max(tgt[2] + 6.5, deck + 2.0)
-                block.location = (tx_, ty_, hook_z + 1.0)
-                block.keyframe_insert("location", frame=f)
-                hammer.location = (tx_, ty_, hook_z - 2.0 if drive_now else -500)
-                hammer.keyframe_insert("location", frame=f)
-                line_obj.location = (tx_, ty_, tip_z)
-                line_obj.scale = (1, 1, max(1.0, tip_z - hook_z - 1.0))
-                line_obj.keyframe_insert("location", frame=f)
-                line_obj.keyframe_insert("scale", frame=f)
-            S._apply_keys(real, keys)
-            S._apply_keys(hull, hk)
-            for o in (block, line_obj, hammer):
-                S._linear(o)
-            machines.append(L.Machine("crawler_crane", 5.0, keys))
+            reach, tip_h, parts = max(8.0, tip[0]), tip[1], None
+            body = real
         else:
             boom_len = 42.0
-            base, upper, boom, block, line_obj = crawler_crane(boom_len)
-            for o in (base, block, line_obj, hull):
-                S._visible(o, s, e, tl.frames)
-            keys, hk, prev_h, last, by_ = [], [], None, None, None
-            for f in range(s, e + 1, 3):
-                tgt = target(f, last)
-                last = tgt
-                want = clamp_y(tgt[1] - 6.0)
-                if by_ is None or abs(want - by_) > 8.0:
-                    by_ = want
-                crane_y[f] = by_
-                keys.append((f, cx, by_, 0.0, deck))
-                hk.append((f, cx + out * 3.0, by_, math.pi / 2, deck))
-                dx, dy = tgt[0] - cx, tgt[1] - by_
-                h = math.atan2(dy, dx)
-                h = h if prev_h is None else L.unwrap(prev_h, h)
-                prev_h = h
+            base, upper, boom, _b, _l = crawler_crane(boom_len)
+            for o in (_b, _l):
+                bpy.data.objects.remove(o)
+            reach, tip_h, parts = boom_len * 0.8, 0.0, (upper, boom)
+            body = base
+        print(f"  crawler crane: reach {reach:.1f} m, from the root and the new deck")
+        for o in (body, line_obj, block):
+            S._visible(o, s, e, tl.frames)
+        keys, prev_h, last, pos = [], None, None, None
+        cur = cr_steps[0]
+        for f in range(s, e + 1, 3):
+            cur = next((t for t in cr_steps if t.start <= f < t.end), cur)
+            y0, y1 = stand(cur)
+            tgt = front(cur, f) if cur.start <= f < cur.end else None
+            tgt = tgt or last or (xm, y1 + 15.0, sea + 3.0)
+            last = tgt
+
+            def err(px, py):
+                d = math.hypot(tgt[0] - px, tgt[1] - py)
+                return abs(d - reach) if real is not None else max(0.0, d - reach)
+
+            ok = pos is not None and y0 <= pos[1] <= y1 and err(*pos) < 2.5
+            if not ok:
+                best = None
+                for px in np.linspace(sea_lane[0], sea_lane[1], 6):
+                    for py in np.arange(y0, y1 + 0.1, 2.0):
+                        sc = err(px, py) + 0.05 * (abs(py - pos[1]) + abs(px - pos[0]) if pos else 0.0)
+                        if best is None or sc < best[0]:
+                            best = (sc, float(px), float(py))
+                pos = (best[1], best[2])
+            cx, cy = pos
+            cz = surface(cx, cy)
+            dx, dy = tgt[0] - cx, tgt[1] - cy
+            h = math.atan2(dy, dx)
+            h = h if prev_h is None else L.unwrap(prev_h, h)
+            prev_h = h
+            if parts is None:
+                keys.append((f, cx, cy, h, cz))
+                r = reach
+                tip_z = cz + tip_h
+            else:
+                keys.append((f, cx, cy, 0.0, cz))
+                upper, boom = parts
                 r = min(boom_len * 0.92, max(14.0, math.hypot(dx, dy)))
-                foot = 1.4 + 2.4
                 luff = math.acos(min(1.0, (r - 1.8) / boom_len))
                 upper.rotation_euler = (0, 0, h)
                 upper.keyframe_insert("rotation_euler", frame=f)
                 boom.rotation_euler = (0, -luff, 0)
                 boom.keyframe_insert("rotation_euler", frame=f)
-                tip_z = deck + foot + math.sin(luff) * boom_len
-                hx, hy = cx + math.cos(h) * r, by_ + math.sin(h) * r
-                hook_z = max(tgt[2] + 3.5, deck + 2.0)
-                drive_now = any(p.start <= f < p.end for p in piling)
-                if drive_now:
-                    hook_z = max(tgt[2] + 6.5, deck + 2.0)
-                block.location = (hx, hy, hook_z + 1.0)
-                block.keyframe_insert("location", frame=f)
-                hammer.location = (hx, hy, hook_z - 2.0 if drive_now else -500)
-                hammer.keyframe_insert("location", frame=f)
-                line_obj.location = (hx, hy, tip_z)
-                line_obj.scale = (1, 1, max(1.0, tip_z - hook_z - 1.0))
-                line_obj.keyframe_insert("location", frame=f)
-                line_obj.keyframe_insert("scale", frame=f)
-            S._apply_keys(base, keys)
-            S._apply_keys(hull, hk)
-            for o in (upper, boom, block, line_obj, hammer):
-                S._linear(o)
-            machines.append(L.Machine("crawler_crane", 5.0, keys))
+                tip_z = cz + 3.8 + math.sin(luff) * boom_len
+            hx, hy = cx + math.cos(h) * r, cy + math.sin(h) * r
+            drive_now = any(p.start <= f < p.end for p in piling)
+            hook_z = max(tgt[2] + (6.5 if drive_now else 3.5), cz + 2.0)
+            block.location = (hx, hy, hook_z + 1.0)
+            block.keyframe_insert("location", frame=f)
+            hammer.location = (hx, hy, hook_z - 2.0 if drive_now else -500)
+            hammer.keyframe_insert("location", frame=f)
+            line_obj.location = (hx, hy, tip_z)
+            line_obj.scale = (1, 1, max(1.0, tip_z - hook_z - 1.0))
+            line_obj.keyframe_insert("location", frame=f)
+            line_obj.keyframe_insert("scale", frame=f)
+        S._apply_keys(body, keys)
+        for o in (block, line_obj, hammer) + (tuple(parts) if parts else ()):
+            S._linear(o)
         S._constant_jumps(hammer)
+        machines.append(L.Machine("crawler_crane", 5.0, keys))
 
-    def near_crane(st) -> list[tuple[int, float]]:
-        """The crane barge's y through a step (sampled from its keys), for what rides on it or
-        lies alongside it."""
-        ks = sorted(crane_y)
-        out_ = []
-        for f in range(st.start, st.end + 1, 6):
-            k = min(ks, key=lambda q: abs(q - f)) if ks else None
-            out_.append((f, crane_y[k] if k is not None else clamp_y(y_lo + 30.0)))
-        return out_
-
-    # --- the work barge with the excavator: breaking out beside the crane barge, placing fill
+    # --- the land-side lane: the excavator at the bay's edge, the pump with a mixer behind it,
+    # the flatbed further back with the precast
     for st in tl.steps:
-        if "excavator" not in st.plant:
-            continue
-        with_crane = "crawler_crane" in st.plant and crane_y
-        ys = [(f, clamp_y(y + 34.0) if clamp_y(y + 34.0) - y > 30.0 else clamp_y(y - 34.0))
-              for f, y in near_crane(st)] if with_crane else follow(st)
-        hull = barge("work_barge", 26.0, 12.0)
-        on_barge(hull, st, ys, bx)
-        on_barge(E.excavator(), st, ys, bx - out * 2.0, 0.0, math.pi if out < 0 else 0.0, "excavator", 3.5)
-        if not with_crane and "flatbed_truck" in st.plant:
-            on_barge(E.flatbed_truck(), st, ys, bx + out * 2.5, 2.0, math.pi / 2, "flatbed_truck", 7.0)
-
-    # --- the concrete barge: the pump and a mixer on it, alongside each pour
-    for st in tl.steps:
-        if "concrete_pump" not in st.plant:
-            continue
-        ys = follow(st, -4.0, every=8, hop=12.0)
-        hull = barge("concrete_barge", 30.0, 12.0)
-        on_barge(hull, st, ys, bx)
-        on_barge(E.concrete_pump(), st, ys, bx - out * 2.5, 2.0, math.pi / 2, "concrete_pump", 6.0)
-        on_barge(E.mixer_truck(), st, ys, bx + out * 2.5, -6.0, math.pi / 2, "mixer_truck", 5.0)
-
-    # --- the flatbed with the precast (and the broken-out pieces) on the crane barge's deck
-    for st in tl.steps:
-        if "flatbed_truck" not in st.plant or "crawler_crane" not in st.plant or not crane_y:
-            continue
-        on_barge(E.flatbed_truck(), st, near_crane(st), bx + out * 3.5, -12.0, math.pi / 2, "flatbed_truck", 7.0)
+        y0, y1 = stand(st)
+        if "excavator" in st.plant:
+            park(E.excavator(), st, land_x, y1, math.pi / 2, "excavator", 3.5)
+        if "concrete_pump" in st.plant:
+            park(E.concrete_pump(), st, land_x, y1 - 1.0, math.pi / 2, "concrete_pump", 6.0)
+            park(E.mixer_truck(), st, land_x, y1 - 12.0, math.pi / 2, "mixer_truck", 5.0)
+        if "flatbed_truck" in st.plant:
+            yb = y1 - 9.0 if "excavator" in st.plant else y1 - 4.0
+            park(E.flatbed_truck(), st, land_x, yb, math.pi / 2, "flatbed_truck", 7.0)
 
     # --- work boat at the pile repairs, on the open side of the deck
     for st in tl.steps:
@@ -529,7 +484,7 @@ def build_plant(elements: list[Element], tl: Timeline, line: tuple[float, float,
         keys = []
         for f in range(st.start, st.end + 1, 8):
             tgt = front(st, f)
-            y = clamp_y(tgt[1] if tgt else y_lo + 10)
+            y = min(y_hi - 4.0, max(y_lo + 4.0, tgt[1] if tgt else y_lo + 10))
             keys.append((f, wx, y, math.pi / 2, sea - 0.4))
         S._apply_keys(boat, keys)
     return machines

@@ -187,7 +187,10 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     stage("scene")
     if any(e.stage for e in elements):
         # the planner's own stages, carried by the model (tools/stage_ifc.py)
-        tl = sequence.plan_staged(elements, seconds=seconds, fps=q["fps"], stages=site.get("stages"))
+        # at sea all plant works from the land at the root and then from the new deck, so the
+        # structure is built end-on, bay by bay (about 25 m) from its root
+        bays = float(os.environ.get("SITETWIN_BAYS", "25")) if marine else 0.0
+        tl = sequence.plan_staged(elements, seconds=seconds, fps=q["fps"], stages=site.get("stages"), bays=bays)
     else:
         tl = sequence.plan(elements, seconds=seconds, fps=q["fps"], fly_in=fly_in)
     (out / "timeline.json").write_text(json.dumps(tl.as_dict(), indent=1))

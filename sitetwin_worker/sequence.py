@@ -190,12 +190,20 @@ HOW_ARRIVAL = {"cast": "grow", "fill": "grow", "lift": "lift", "fit": "fit", "dr
 
 
 def plan_staged(elements: list[Element], seconds: float = 120.0, fps: int = 30, today: float = 3.0,
-                outro: float = 0.08, stages: list[dict[str, Any]] | None = None) -> Timeline:
+                outro: float = 0.08, stages: list[dict[str, Any]] | None = None,
+                bays: float = 0.0) -> Timeline:
     """The planner's own stages, in their order (each element carries its stage, see
     tools/stage_ifc.py). The film opens on the structure as it is today for ``today`` seconds;
     each stage then takes a share of the build growing with its element count. Within a stage
     the work runs along the structure from its root (the low end of its long axis) bay by bay,
-    and cast-in-place work goes one element after another, as one gang pours them."""
+    and cast-in-place work goes one element after another, as one gang pours them.
+
+    ``bays`` (metres): built end-on from the root instead, as when all plant works from the land
+    and then from the new deck: the structure is cut into bays of about that length along its
+    long axis, and each bay goes through all the stages before the next is started, so the crane
+    always stands on finished deck (or the land at the root). An element running over several
+    bays is broken out (or, the fill, tipped out from the root) with the first, and built with the
+    last."""
     frames = int(round(seconds * fps))
     build_start = int(round(min(today, seconds * 0.08) * fps))
     build_end = int(frames * (1 - outro))
@@ -205,18 +213,41 @@ def plan_staged(elements: list[Element], seconds: float = 120.0, fps: int = 30, 
     long_x = (hi[0] - lo[0]) >= (hi[1] - lo[1])
     days_of = {str(s.get("code")): float(s.get("days", 0) or 0) for s in (stages or [])}
 
-    groups: dict[tuple[int, str], list[Element]] = {}
+    a_lo, a_hi = float(lo[0] if long_x else lo[1]), float(hi[0] if long_x else hi[1])
+    n_bays = max(1, int(round((a_hi - a_lo) / bays))) if bays > 0 else 1
+    bay_len = (a_hi - a_lo) / n_bays
+
+    def bay_of(e: Element) -> int:
+        if n_bays == 1:
+            return 0
+        e0, e1 = (float(e.lo[0]), float(e.hi[0])) if long_x else (float(e.lo[1]), float(e.hi[1]))
+        if e1 - e0 > 1.3 * bay_len:
+            # spans several bays: broken out (or tipped, the fill) with the first, built with
+            # the last, once all that carries it is there
+            at = e0 + 0.5 if e.how in ("remove", "fill") else e1 - 0.5
+        else:
+            at = (e0 + e1) / 2
+        return int(min(n_bays - 1, max(0, math.floor((at - a_lo) / bay_len))))
+
+    groups: dict[tuple[int, int, str], list[Element]] = {}
     for e in elements:
         if e.stage_order < 0:
             continue
-        groups.setdefault((e.stage_order, e.stage), []).append(e)
+        groups.setdefault((bay_of(e), e.stage_order, e.stage), []).append(e)
     keys = sorted(groups)
     work = [k for k in keys if any(HOW_ARRIVAL.get(e.how, "fit") != "exist" or e.how == "repair" for e in groups[k])]
-    # the planner's durations when every stage has one, otherwise a share growing with the count
-    if work and all(days_of.get(k[1]) for k in work):
-        weights = {k: days_of[k[1]] for k in work}
+    # the planner's durations when every stage has one (shared out over the bays by the stage's
+    # elements in each), otherwise a share growing with the count
+    count = {}
+    for k in work:
+        count[k[1:]] = count.get(k[1:], 0) + len(groups[k])
+    if work and all(days_of.get(k[2]) for k in work):
+        weights = {k: days_of[k[2]] * len(groups[k]) / count[k[1:]] for k in work}
     else:
         weights = {k: max(len(groups[k]) ** 0.6, 4.0) for k in work}
+    # a little less than a whole stage per bay: the bays share each stage's set-up
+    if n_bays > 1:
+        weights = {k: max(w, 0.15 * max(weights.values())) for k, w in weights.items()}
     total = sum(weights.values()) or 1.0
     span = build_end - build_start
     steps: list[Step] = []
@@ -269,10 +300,12 @@ def plan_staged(elements: list[Element], seconds: float = 120.0, fps: int = 30, 
         lo_ = np.min([e.lo for e in els], axis=0)
         hi_ = np.max([e.hi for e in els], axis=0)
         c = (lo_ + hi_) / 2
-        steps.append(Step(n=n, storey=f"Stage {k[1]}", phase=els[0].stage_name or f"Stage {k[1]}", start=s0, end=s1,
+        label = f"Stage {k[2]}" if n_bays == 1 else f"Bay {k[0] + 1} of {n_bays} \u00b7 Stage {k[2]}"
+        days = days_of.get(k[2], 0.0) * (len(groups[k]) / count[k[1:]] if n_bays > 1 else 1.0)
+        steps.append(Step(n=n, storey=label, phase=els[0].stage_name or f"Stage {k[2]}", start=s0, end=s1,
                           guids=[e.guid for e in els], centre=(float(c[0]), float(c[1]), float(c[2])),
                           top=float(hi_[2]), plant=list(HOW_PLANT.get(how, [])), crew=HOW_CREW.get(how, 4),
-                          how=how, days=days_of.get(k[1], 0.0)))
+                          how=how, days=round(days, 1)))
     return Timeline(fps=fps, frames=frames, build_start=build_start, build_end=build_end, steps=steps,
                     appear=appear, staged=True, removed=removed)
 

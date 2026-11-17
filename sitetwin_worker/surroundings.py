@@ -42,6 +42,7 @@ def sea_share(image: Path, n: int) -> np.ndarray:
 
 SLOPE = 1.5            # armour slopes, 1 in 1.5, as TritoMoor draws a rock mound
 BED = 7.0              # the sea bed this far under the sea
+CREST = 3.0            # the least height of land at the coast (a breakwater's crest)
 
 
 def _distance(mask: np.ndarray, h: float, cells: int) -> np.ndarray:
@@ -75,16 +76,18 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float) -> tuple[np.ndar
         rgb = np.asarray(Image.open(folder / manifest["imagery"]["file"]).convert("RGB"), dtype=np.int16)
         rr, gg, bb = rgb[..., 0], rgb[..., 1], rgb[..., 2]
         wetp = ((bb > rr + 18) & (gg > rr + 12)).astype(np.uint8) * 255
-        img = Image.fromarray(wetp).filter(ImageFilter.MedianFilter(5)).filter(ImageFilter.GaussianBlur(1))
+        img = Image.fromarray(wetp).filter(ImageFilter.MedianFilter(7)).filter(ImageFilter.GaussianBlur(2.5))
         share = np.asarray(img.convert("F").resize((n, n), Image.BILINEAR)) / 255.0
     else:
         share = np.asarray(Image.fromarray((raw < 0.5).astype(np.float32)).resize((n, n), Image.BILINEAR))
     level = np.asarray(Image.fromarray(raw.astype(np.float32)).resize((n, n), Image.BILINEAR))
     dry = share < 0.5
-    cells = int(math.ceil(SLOPE * (BED + 12.0) / h))
+    cells = int(math.ceil(SLOPE * (BED + CREST + 6.0) / h))
     up = _distance(dry, h, cells) - h / 2                      # metres in from the waterline
     down = _distance(~dry, h, cells) - h / 2                   # metres out from it
-    top = np.maximum(level, 1.5) + sea                         # the land's own level
+    # the land's own level, and at least a breakwater's crest (+3) where it meets the sea, so
+    # the armour reads as a slope from crest to sea bed, as in TritoMoor
+    top = np.maximum(level, CREST) + sea
     z = np.where(dry, np.minimum(top, sea + np.maximum(up, 0.0) / SLOPE),
                  np.maximum(sea - BED, sea - np.maximum(down, 0.0) / SLOPE))
     return z.astype(np.float32), z <= sea - BED + 1e-3, r
