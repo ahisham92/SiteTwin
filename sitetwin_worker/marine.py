@@ -634,7 +634,10 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
         # mound (surroundings.heights); the model's own ground (the sea bed and slopes under the
         # deck, mostly under water) is kept only inside the works
         # the land runs right up to the deck's edges (under them), so no gap shows between them
-        around = surroundings.build(manifest, env_folder, sea, (fp[0] + 2.0, fp[2] - 2.0, fp[1] + 2.0, fp[3] - 2.0))
+        # (on the land side only: the model's ground lies there)
+        west = bool(ground) and float(np.mean([e.centre[0] for e in ground])) < (fp[0] + fp[2]) / 2
+        tuck = (fp[0] + 2.0, fp[2]) if west else (fp[0], fp[2] - 2.0)
+        around = surroundings.build(manifest, env_folder, sea, (tuck[0], tuck[1], fp[1], fp[3]))
         around.pop("ground", None)
         print("  modelled surroundings:", around)
     elif has_google:
