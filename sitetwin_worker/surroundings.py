@@ -44,6 +44,7 @@ SLOPE = 1.5            # armour slopes, 1 in 1.5, as TritoMoor draws a rock moun
 BED = 7.0              # the sea bed this far under the sea
 CREST = 3.0            # the least height of land at the coast (a breakwater's crest)
 BREAKWATER_CREST = float(__import__("os").environ.get("SITETWIN_BREAKWATER_CREST", "5.6"))  # above the sea
+NEAR_WORKS = 60.0      # the photograph's breakwater strip this close to the works is redrawn
 THIN = 35.0            # land no further than this from the sea all across is a breakwater
 THIN_MASK = None       # set by heights(): the breakwaters' points
 
@@ -103,6 +104,21 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
     far = np.asarray(Image.fromarray(up_t.astype(np.float32), "F").filter(ImageFilter.MaxFilter(2 * int(THIN / h) + 1)))
     global THIN_MASK
     THIN_MASK = dry & (far < THIN - h) & (up_t > 0)
+    if works is not None:
+        # the breakwater beside the works is drawn as a rock mound of its own (rock_mound), as
+        # TritoMoor draws it, not traced from the photograph: clear the photograph's strip there
+        gx = np.abs(xs[None, :] - np.clip(xs[None, :], k0, k1))
+        gy = np.abs(ys[:, None] - np.clip(ys[:, None], k2, k3))
+        clear = THIN_MASK & (np.hypot(gx, gy) < NEAR_WORKS)
+        clear = np.asarray(Image.fromarray(clear.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(5))) > 0
+        clear &= ~inw
+        if clear.any():
+            dry = dry & ~clear
+            up = _distance(dry, h, cells) - h / 2
+            down = _distance(~dry, h, cells) - h / 2
+            up_t = np.where(clear, 0.0, up_t)
+            far = np.where(clear, THIN, far)
+            THIN_MASK &= ~clear
     # the land's own level, and at least +3 where it meets the sea, so the armour reads as a
     # slope from crest to sea bed as in TritoMoor; a breakwater stands higher, its crest above
     # the deck it shelters (rising to it over 10 m where it leaves the shore)
@@ -400,3 +416,86 @@ def build(manifest: dict[str, Any], folder: Path, sea: float, keep: tuple[float,
     feats = json.loads((folder / manifest["osm"]["file"]).read_text()) if "osm" in manifest else []
     counts = build_osm(feats, ground, wet, keep, sea)
     return {"radius": r, "sea_share": round(float(wet.mean()), 2), **counts, "shore_stones": stones, "ground": ground}
+
+
+def rock_mound(pts: list[tuple[float, float]], width: float, top: float, bed: float,
+               free: tuple[bool, bool] = (False, True), name: str = "breakwater") -> int:
+    """A rock breakwater as TritoMoor draws one: along the line ``pts`` a crest ``width`` wide
+    at ``top``, armour slopes of 1 in 1.5 each side down to ``bed``, in blocks of about 9 m of
+    two tones of stone under a lighter crest, and a round head at each free end (``free`` for
+    the first and last point); bends are rounded too. Returns the number of blocks."""
+    import bmesh
+    import bpy
+    w, run = width / 2, SLOPE * (top - bed)
+    top0 = top
+    bm = bmesh.new()
+    faces: list[tuple[list, int]] = []
+
+    def quad(a, b, c, d, m):
+        faces.append(([a, b, c, d], m))
+
+    def head(e, ux, uy, sd, half: bool = True):
+        nx, ny = -uy, ux
+        # a bend's round lies over both arms' ends: lift it clear of their crests, or Cycles
+        # shades the two coplanar faces black where they overlap
+        top = top0 if half else top0 + 0.03
+        steps = 12 if half else 24
+        span = math.pi if half else 2 * math.pi
+        for q in range(steps):
+            a0 = -math.pi / 2 + q * span / steps
+            a1 = a0 + span / steps
+            d0 = (sd * ux * math.cos(a0) + nx * math.sin(a0), sd * uy * math.cos(a0) + ny * math.sin(a0))
+            d1 = (sd * ux * math.cos(a1) + nx * math.sin(a1), sd * uy * math.cos(a1) + ny * math.sin(a1))
+            t0 = (e[0] + d0[0] * w, e[1] + d0[1] * w, top)
+            t1 = (e[0] + d1[0] * w, e[1] + d1[1] * w, top)
+            g0 = (e[0] + d0[0] * (w + run), e[1] + d0[1] * (w + run), bed)
+            g1 = (e[0] + d1[0] * (w + run), e[1] + d1[1] * (w + run), bed)
+            faces.append(([(e[0], e[1], top), t0, t1], 2))
+            quad(t0, g0, g1, t1, q % 2)
+
+    blocks = 0
+    for i in range(len(pts) - 1):
+        a, b = pts[i], pts[i + 1]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        L = math.hypot(dx, dy)
+        if L < 0.01:
+            continue
+        ux, uy = dx / L, dy / L
+        nx, ny = -uy, ux
+        n = max(1, round(L / 9.0))
+        for k in range(n):
+            t0, t1 = k / n, (k + 1) / n
+            p0 = (a[0] + dx * t0, a[1] + dy * t0)
+            p1 = (a[0] + dx * t1, a[1] + dy * t1)
+
+            def c(p, sd, z, o):
+                return (p[0] + nx * sd * o, p[1] + ny * sd * o, z)
+            quad(c(p0, -1, top, w), c(p1, -1, top, w), c(p1, 1, top, w), c(p0, 1, top, w), 2)
+            quad(c(p0, 1, top, w), c(p1, 1, top, w), c(p1, 1, bed, w + run), c(p0, 1, bed, w + run), k % 2)
+            quad(c(p1, -1, top, w), c(p0, -1, top, w), c(p0, -1, bed, w + run), c(p1, -1, bed, w + run), (k + 1) % 2)
+            blocks += 1
+        if i == 0 and free[0]:
+            head(a, ux, uy, -1)
+        if i == len(pts) - 2 and free[1]:
+            head(b, ux, uy, 1)
+        if i < len(pts) - 2:
+            head(b, ux, uy, 1, half=False)            # a bend: round, so the two arms meet
+    for vs, m in faces:
+        try:
+            f = bm.faces.new([bm.verts.new(v) for v in vs])
+            f.material_index = m
+        except ValueError:
+            pass
+    # every face of a mound looks up (its crest) or out and up (its slopes)
+    for f in bm.faces:
+        f.normal_update()
+        if f.normal.z < 0:
+            f.normal_flip()
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    for m in ("armour_a", "armour_b", "armour_top"):
+        me.materials.append(M.get(m))
+    ob = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(ob)
+    return blocks

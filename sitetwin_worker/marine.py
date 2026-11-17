@@ -609,6 +609,10 @@ def build_camera(fp, top: float, tl: Timeline, side: int, sea: float):
     return cam
 
 
+#: the crest width of the breakwater the works lie against (TritoMoor's default is 12 m)
+BW_WIDTH = 10.0
+
+
 # ---- the whole scene --------------------------------------------------------------------------
 
 def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dict[str, Any],
@@ -639,6 +643,15 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
         tuck = (fp[0] + 2.0, fp[2]) if west else (fp[0], fp[2] - 2.0)
         around = surroundings.build(manifest, env_folder, sea, (tuck[0], tuck[1], fp[1], fp[3]))
         around.pop("ground", None)
+        # the breakwater the works lie against, as TritoMoor draws it: a rock mound along the
+        # deck's land side from the shore, turning round the deck's head and ending in a round
+        # head off the corner of the berth face
+        bx = fp[0] - (BW_WIDTH / 2 + 1.0) if west else fp[2] + (BW_WIDTH / 2 + 1.0)
+        yh = fp[3] + BW_WIDTH / 2 + 2.0
+        xe = fp[2] - 8.0 if west else fp[0] + 8.0
+        around["breakwater_blocks"] = surroundings.rock_mound(
+            [(bx, fp[1] - 15.0), (bx, yh), (xe, yh)], BW_WIDTH, sea + surroundings.BREAKWATER_CREST,
+            sea - surroundings.BED, free=(False, True))
         print("  modelled surroundings:", around)
     elif has_google:
         # the shore's own streets stay as Google has them: nothing is rebuilt near a site at sea
