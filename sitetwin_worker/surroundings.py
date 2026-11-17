@@ -3,8 +3,8 @@
 Draped aerial photographs and Google's photo-real mesh look soft and smeared next to a crisp
 model, so here the place is rebuilt from data, in the same materials and light as the works:
 
-* **Ground** from the terrain heights, in plain land, with rock along every shore (breakwaters,
-  armour, the coast). The aerial photograph is never shown: it only says where the sea is, which
+* **Ground** from the terrain heights, in plain land, and every shore (breakwaters, armour, the
+  coast) a clean rock slope of 1 in 1.5 in two tones of stone, as TritoMoor draws its mounds. The aerial photograph is never shown: it only says where the sea is, which
   coarse coastal heights cannot.
 * **Sea** everywhere the photograph shows water, out to the horizon.
 * **Buildings** from OpenStreetMap, extruded to their heights (or a believable spread), plastered
@@ -40,20 +40,54 @@ def sea_share(image: Path, n: int) -> np.ndarray:
     return np.asarray(img.convert("F").resize((n, n), Image.BILINEAR)) / 255.0
 
 
+SLOPE = 1.5            # armour slopes, 1 in 1.5, as TritoMoor draws a rock mound
+BED = 7.0              # the sea bed this far under the sea
+
+
+def _distance(mask: np.ndarray, h: float, cells: int) -> np.ndarray:
+    """Distance in metres from each point of ``mask`` to the nearest point outside it, up to
+    ``cells`` points away (further is given as that far); 0 outside the mask."""
+    n0, n1 = mask.shape
+    out = np.full(mask.shape, cells * h, dtype=np.float32)
+    pad = np.pad(~mask, cells, mode="edge")
+    for di in range(-cells, cells + 1):
+        for dj in range(-cells, cells + 1):
+            d = math.hypot(di, dj)
+            if d == 0 or d > cells:
+                continue
+            other = pad[cells + di:cells + di + n0, cells + dj:cells + dj + n1]
+            np.minimum(out, np.where(other, d * h, out), out=out)
+    return np.where(mask, out, 0.0)
+
+
 def heights(manifest: dict[str, Any], folder: Path, sea: float) -> tuple[np.ndarray, np.ndarray, float]:
-    """The ground in the scene's levels (z), the sea mask, and the radius."""
+    """The ground in the scene's levels (z), the sea mask, and the radius.
+
+    The coast is drawn the way TritoMoor draws it: land flat at its own level, and wherever it
+    meets the sea a clean armour slope of 1 in 1.5 from the top edge down to the sea bed. The
+    waterline comes from the photograph (coastal heights are far too coarse for it), at about
+    3 m spacing, so breakwaters and the shore read as built rock mounds, not soft ramps."""
     r = float(manifest["radius"])
     raw = np.load(folder / manifest["terrain"]["file"]) if "terrain" in manifest else np.zeros((129, 129))
-    n = raw.shape[0]
-    share = sea_share(folder / manifest["imagery"]["file"], n) if "imagery" in manifest else (raw < 0.5).astype(float)
-    # Dry ground stays at least a metre up (coastal heights are coarse) and the sea bed drops
-    # away. Between them the ground slopes through the waterline where the photograph's share of
-    # water passes a half, so the coast is a smooth line where the sea meets a sloping shore, not
-    # the steps of the height grid.
-    t = np.clip((0.5 - share) / 0.2, -1.0, 1.0)               # 1 land, 0 the waterline, -1 sea
-    land = np.maximum(raw, 1.0) + sea
-    z = np.where(t >= 0, sea - 0.4 + t * (land - sea + 0.4), sea - 0.4 + t * 5.6)
-    return z, t < -0.999, r
+    n = 2 * (raw.shape[0] - 1) + 1 if raw.shape[0] < 900 else raw.shape[0]
+    h = 2 * r / (n - 1)
+    if "imagery" in manifest:
+        rgb = np.asarray(Image.open(folder / manifest["imagery"]["file"]).convert("RGB"), dtype=np.int16)
+        rr, gg, bb = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+        wetp = ((bb > rr + 18) & (gg > rr + 12)).astype(np.uint8) * 255
+        img = Image.fromarray(wetp).filter(ImageFilter.MedianFilter(5)).filter(ImageFilter.GaussianBlur(1))
+        share = np.asarray(img.convert("F").resize((n, n), Image.BILINEAR)) / 255.0
+    else:
+        share = np.asarray(Image.fromarray((raw < 0.5).astype(np.float32)).resize((n, n), Image.BILINEAR))
+    level = np.asarray(Image.fromarray(raw.astype(np.float32)).resize((n, n), Image.BILINEAR))
+    dry = share < 0.5
+    cells = int(math.ceil(SLOPE * (BED + 12.0) / h))
+    up = _distance(dry, h, cells) - h / 2                      # metres in from the waterline
+    down = _distance(~dry, h, cells) - h / 2                   # metres out from it
+    top = np.maximum(level, 1.5) + sea                         # the land's own level
+    z = np.where(dry, np.minimum(top, sea + np.maximum(up, 0.0) / SLOPE),
+                 np.maximum(sea - BED, sea - np.maximum(down, 0.0) / SLOPE))
+    return z.astype(np.float32), z <= sea - BED + 1e-3, r
 
 
 class Surface:
@@ -88,6 +122,10 @@ def _mesh(name: str, verts, faces, mats: list[str], mat_index=None):
     return ob
 
 
+def h_of(r: float, n: int) -> float:
+    return 2 * r / (n - 1)
+
+
 def build_ground(z: np.ndarray, wet: np.ndarray, r: float, keep: tuple[float, float, float, float],
                  sea: float, horizon: float = 25000.0):
     """The ground mesh: land, with rock wherever it meets the sea; nothing where it is all sea or
@@ -114,9 +152,14 @@ def build_ground(z: np.ndarray, wet: np.ndarray, r: float, keep: tuple[float, fl
     inside = (cx > k0) & (cx < k1) & (cy > k2) & (cy < k3)
     keep_face = ~w4.all(axis=1) & ~inside
     z4 = np.stack([z[:-1, :-1], z[1:, :-1], z[1:, 1:], z[:-1, 1:]], axis=-1).reshape(-1, 4)
-    rock = (s4.any(axis=1) | w4.any(axis=1) | (z4.min(axis=1) < sea + 0.9))[keep_face]
+    # the armour slope: any face that is not level (land tops are flat at their own level, the
+    # coarse heights inland vary slowly); in blocks of about 9 m of two tones, as TritoMoor
+    slope = ((z4.max(axis=1) - z4.min(axis=1)) > 0.35 * h_of(r, n)) & (z4.min(axis=1) < sea + 8.0)
+    slope |= (s4.any(axis=1) | w4.any(axis=1)) & (z4.min(axis=1) < sea + 0.5)
+    tone = ((np.floor(cx / 9.0) + np.floor(cy / 9.0)) % 2).astype(np.int32)
+    mat = np.where(slope, 1 + tone, 0)[keep_face]
     faces = quads[keep_face]
-    _mesh("land", verts, faces, ["land", "rock"], rock.astype(np.int32))
+    _mesh("land", verts, faces, ["land", "armour_a", "armour_b"], mat.astype(np.int32))
     # the run-out: each edge point carried straight out to the horizon at its own level
     ring = ([(0, j) for j in range(n)] + [(i, n - 1) for i in range(1, n)]
             + [(n - 1, j) for j in range(n - 2, -1, -1)] + [(i, 0) for i in range(n - 2, 0, -1)])
@@ -325,18 +368,7 @@ def build(manifest: dict[str, Any], folder: Path, sea: float, keep: tuple[float,
     k0, k1, k2, k3 = keep
     cx, cy = (k0 + k1) / 2, (k2 + k3) / 2
     reach = max(k1 - k0, k3 - k2) * 2.5 + 150
-    # armour stone along the shore near the works, where the camera sees it as stone
-    # (only on slopes that come up out of the water onto land: not on shallows out in the sea)
-    stones = boulders([bpy.data.objects["land"]], 1, 0.3,
-                      near=lambda x, y, zc, top: math.hypot(x - cx, y - cy) < reach and sea - 0.8 < zc < sea + 5.0,
-                      name="shore_armour")
-    # the breakwater the works stand against: all of it beside the works is armour stone
-    def by_works(x, y, zc, top):
-        dx = max(k0 - x, x - k1, 0.0)
-        dy = max(k2 - y, y - k3, 0.0)
-        return math.hypot(dx, dy) < 30.0 and zc > sea - 0.8
-    stones += boulders([bpy.data.objects["land"]], None, 0.45, seed=5, near=by_works, size=(1.0, 2.3),
-                       name="breakwater_armour_shore")
+    stones = 0
     feats = json.loads((folder / manifest["osm"]["file"]).read_text()) if "osm" in manifest else []
     counts = build_osm(feats, ground, wet, keep, sea)
     return {"radius": r, "sea_share": round(float(wet.mean()), 2), **counts, "shore_stones": stones, "ground": ground}

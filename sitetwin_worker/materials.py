@@ -347,6 +347,13 @@ def get(name: str):
     elif name == "road_worn":
         # sun-bleached asphalt, as roads look from the air on a dry coast
         _noise_mix(tree, bsdf, (0.10, 0.10, 0.10), (0.17, 0.165, 0.16), scale=1.0, detail=10, rough=(0.75, 0.95), bump=0.15)
+    elif name in ("armour_a", "armour_b", "armour_top"):
+        # a rock mound drawn as TritoMoor draws one: two tones of armour stone in blocks along
+        # its slopes and a lighter crest, quiet enough that the shape reads before the stone
+        base = {"armour_a": (0.212, 0.195, 0.155), "armour_b": (0.144, 0.130, 0.102),
+                "armour_top": (0.270, 0.251, 0.205)}[name]
+        _noise_mix(tree, bsdf, tuple(c * 0.85 for c in base), tuple(min(1.0, c * 1.15) for c in base),
+                   scale=1.6, detail=4, rough=(0.85, 1.0), bump=0.35)
     elif name == "armour":
         # limestone armour stone: pale grey-beige, each face a little different, rough
         _noise_mix(tree, bsdf, (0.24, 0.22, 0.19), (0.50, 0.47, 0.41), scale=0.9, detail=6, rough=(0.8, 1.0), bump=0.6)

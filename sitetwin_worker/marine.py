@@ -116,7 +116,8 @@ def build_water(around: tuple[float, float, float, float], z: float, clear: bool
 
 def build_ground(ground: list[Element], keep: tuple[float, float, float, float]) -> list:
     """The model's ground after the works, cut to ``keep`` (beyond it Google's is the ground):
-    rock armour on the slopes, fill on the flat top."""
+    the breakwater as TritoMoor draws a rock mound, its slopes in blocks of two tones of armour
+    stone and its crest lighter."""
     import bmesh
     import bpy
     x0, y0, x1, y1 = keep
@@ -136,20 +137,32 @@ def build_ground(ground: list[Element], keep: tuple[float, float, float, float])
         if not bm.faces:
             bm.free()
             continue
+        # cut into blocks of about 9 m along and across, so its slopes read in two tones of stone
+        # as TritoMoor draws a rock mound
+        lo, hi = e.lo, e.hi
+        for axis, (a0, a1) in ((0, (lo[0], hi[0])), (1, (lo[1], hi[1]))):
+            k = math.floor(a0 / 9.0) + 1
+            while k * 9.0 < a1:
+                co = [0.0, 0.0, 0.0]
+                no = [0.0, 0.0, 0.0]
+                co[axis], no[axis] = k * 9.0, 1.0
+                geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
+                bmesh.ops.bisect_plane(bm, geom=geom, dist=1e-4, plane_co=co, plane_no=no)
+                k += 1
         me = bpy.data.meshes.new("ground_" + e.guid)
         bm.to_mesh(me)
         bm.free()
-        me.materials.append(M.get("rock"))
-        me.materials.append(M.get("gravel"))
+        for m in ("armour_a", "armour_b", "armour_top"):
+            me.materials.append(M.get(m))
         for p in me.polygons:
-            p.material_index = 1 if (p.normal.z > 0.92 and p.center.z > 0.8) else 0
+            c = p.center
+            if abs(p.normal.z) > 0.92 and c.z > 0.8:
+                p.material_index = 2                        # the crest, lighter
+            else:
+                p.material_index = int((math.floor(c.x / 9.0) + math.floor(c.y / 9.0)) % 2)
         o = bpy.data.objects.new("ground_model", me)
         bpy.context.scene.collection.objects.link(o)
         out.append(o)
-    if out:
-        # the breakwater's slopes as armour stone, boulder by boulder (slot 0 is the rock)
-        from .surroundings import boulders
-        boulders(out, 0, 0.35, seed=11, size=(1.0, 2.2), name="breakwater_armour")
     return out
 
 
