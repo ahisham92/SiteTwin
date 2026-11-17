@@ -630,15 +630,11 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     around = None
     if manifest.get("modelled"):
         from . import surroundings
-        # the model's own ground is the breakwater, crest and slopes as designed: keep all of it,
-        # and leave the modelled land out of its whole area
-        if ground:
-            glo = np.min([e.lo for e in ground], axis=0)
-            ghi = np.max([e.hi for e in ground], axis=0)
-            keep_out = (min(keep_out[0], float(glo[0])), min(keep_out[1], float(glo[1])),
-                        max(keep_out[2], float(ghi[0])), max(keep_out[3], float(ghi[1])))
-            print("  works and breakwater area:", [round(v, 1) for v in keep_out])
-        around = surroundings.build(manifest, env_folder, sea, (keep_out[0], keep_out[2], keep_out[1], keep_out[3]))
+        # the breakwater beside the deck is the land the photograph shows there, drawn as a rock
+        # mound (surroundings.heights); the model's own ground (the sea bed and slopes under the
+        # deck, mostly under water) is kept only inside the works
+        # the land runs right up to the deck's edges (under them), so no gap shows between them
+        around = surroundings.build(manifest, env_folder, sea, (fp[0] + 2.0, fp[2] - 2.0, fp[1] + 2.0, fp[3] - 2.0))
         around.pop("ground", None)
         print("  modelled surroundings:", around)
     elif has_google:

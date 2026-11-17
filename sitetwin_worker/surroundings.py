@@ -43,6 +43,8 @@ def sea_share(image: Path, n: int) -> np.ndarray:
 SLOPE = 1.5            # armour slopes, 1 in 1.5, as TritoMoor draws a rock mound
 BED = 7.0              # the sea bed this far under the sea
 CREST = 3.0            # the least height of land at the coast (a breakwater's crest)
+THIN = 35.0            # land no further than this from the sea all across is a breakwater
+THIN_MASK = None       # set by heights(): the breakwaters' points
 
 
 def _distance(mask: np.ndarray, h: float, cells: int) -> np.ndarray:
@@ -61,7 +63,8 @@ def _distance(mask: np.ndarray, h: float, cells: int) -> np.ndarray:
     return np.where(mask, out, 0.0)
 
 
-def heights(manifest: dict[str, Any], folder: Path, sea: float) -> tuple[np.ndarray, np.ndarray, float]:
+def heights(manifest: dict[str, Any], folder: Path, sea: float,
+            works: tuple[float, float, float, float] | None = None) -> tuple[np.ndarray, np.ndarray, float]:
     """The ground in the scene's levels (z), the sea mask, and the radius.
 
     The coast is drawn the way TritoMoor draws it: land flat at its own level, and wherever it
@@ -82,7 +85,7 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float) -> tuple[np.ndar
         share = np.asarray(Image.fromarray((raw < 0.5).astype(np.float32)).resize((n, n), Image.BILINEAR))
     level = np.asarray(Image.fromarray(raw.astype(np.float32)).resize((n, n), Image.BILINEAR))
     dry = share < 0.5
-    cells = int(math.ceil(SLOPE * (BED + CREST + 6.0) / h))
+    cells = max(int(math.ceil(SLOPE * (BED + CREST + 6.0) / h)), int(math.ceil(THIN / h)) + 1)
     up = _distance(dry, h, cells) - h / 2                      # metres in from the waterline
     down = _distance(~dry, h, cells) - h / 2                   # metres out from it
     # the land's own level, and at least a breakwater's crest (+3) where it meets the sea, so
@@ -90,6 +93,20 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float) -> tuple[np.ndar
     top = np.maximum(level, CREST) + sea
     z = np.where(dry, np.minimum(top, sea + np.maximum(up, 0.0) / SLOPE),
                  np.maximum(sea - BED, sea - np.maximum(down, 0.0) / SLOPE))
+    # a breakwater: land in a strip no wider than twice THIN, all of it a rock mound with a
+    # stone crest (its middle is never further than THIN from the sea)
+    # (the works themselves count as water here: the photograph shows the old deck as land, and
+    # the breakwater beside it would otherwise not read as a strip)
+    up_t = up
+    if works is not None:
+        k0, k1, k2, k3 = works
+        xs = np.linspace(-r, r, n)
+        ys = np.linspace(r, -r, n)
+        inw = ((ys[:, None] > k2) & (ys[:, None] < k3)) & ((xs[None, :] > k0) & (xs[None, :] < k1))
+        up_t = _distance(dry & ~inw, h, cells) - h / 2
+    far = np.asarray(Image.fromarray(up_t.astype(np.float32), "F").filter(ImageFilter.MaxFilter(2 * int(THIN / h) + 1)))
+    global THIN_MASK
+    THIN_MASK = dry & (far < THIN - h) & (up_t > 0)
     return z.astype(np.float32), z <= sea - BED + 1e-3, r
 
 
@@ -160,9 +177,13 @@ def build_ground(z: np.ndarray, wet: np.ndarray, r: float, keep: tuple[float, fl
     slope = ((z4.max(axis=1) - z4.min(axis=1)) > 0.35 * h_of(r, n)) & (z4.min(axis=1) < sea + 8.0)
     slope |= (s4.any(axis=1) | w4.any(axis=1)) & (z4.min(axis=1) < sea + 0.5)
     tone = ((np.floor(cx / 9.0) + np.floor(cy / 9.0)) % 2).astype(np.int32)
-    mat = np.where(slope, 1 + tone, 0)[keep_face]
+    mat = np.where(slope, 1 + tone, 0)
+    if THIN_MASK is not None and THIN_MASK.shape == z.shape:
+        t4 = np.stack([THIN_MASK[:-1, :-1], THIN_MASK[1:, :-1], THIN_MASK[1:, 1:], THIN_MASK[:-1, 1:]], axis=-1).reshape(-1, 4)
+        mat = np.where((mat == 0) & t4.any(axis=1), 3, mat)          # a breakwater's crest
+    mat = mat[keep_face]
     faces = quads[keep_face]
-    _mesh("land", verts, faces, ["land", "armour_a", "armour_b"], mat.astype(np.int32))
+    _mesh("land", verts, faces, ["land", "armour_a", "armour_b", "armour_top"], mat.astype(np.int32))
     # the run-out: each edge point carried straight out to the horizon at its own level
     ring = ([(0, j) for j in range(n)] + [(i, n - 1) for i in range(1, n)]
             + [(n - 1, j) for j in range(n - 2, -1, -1)] + [(i, 0) for i in range(n - 2, 0, -1)])
@@ -365,7 +386,7 @@ def _translate(x, y, z):
 
 def build(manifest: dict[str, Any], folder: Path, sea: float, keep: tuple[float, float, float, float]) -> dict[str, Any]:
     """The modelled surroundings. ``keep`` is (x0, x1, y0, y1) of the works, left empty."""
-    z, wet, r = heights(manifest, folder, sea)
+    z, wet, r = heights(manifest, folder, sea, keep)
     ground = build_ground(z, wet, r, keep, sea)
     import bpy
     k0, k1, k2, k3 = keep
