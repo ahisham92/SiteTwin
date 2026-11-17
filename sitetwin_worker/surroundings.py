@@ -43,6 +43,7 @@ def sea_share(image: Path, n: int) -> np.ndarray:
 SLOPE = 1.5            # armour slopes, 1 in 1.5, as TritoMoor draws a rock mound
 BED = 7.0              # the sea bed this far under the sea
 CREST = 3.0            # the least height of land at the coast (a breakwater's crest)
+BREAKWATER_CREST = float(__import__("os").environ.get("SITETWIN_BREAKWATER_CREST", "5.6"))  # above the sea
 THIN = 35.0            # land no further than this from the sea all across is a breakwater
 THIN_MASK = None       # set by heights(): the breakwaters' points
 
@@ -85,14 +86,9 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
         share = np.asarray(Image.fromarray((raw < 0.5).astype(np.float32)).resize((n, n), Image.BILINEAR))
     level = np.asarray(Image.fromarray(raw.astype(np.float32)).resize((n, n), Image.BILINEAR))
     dry = share < 0.5
-    cells = max(int(math.ceil(SLOPE * (BED + CREST + 6.0) / h)), int(math.ceil(THIN / h)) + 1)
+    cells = max(int(math.ceil(SLOPE * (BED + BREAKWATER_CREST + 2.0) / h)), int(math.ceil(THIN / h)) + 1)
     up = _distance(dry, h, cells) - h / 2                      # metres in from the waterline
     down = _distance(~dry, h, cells) - h / 2                   # metres out from it
-    # the land's own level, and at least a breakwater's crest (+3) where it meets the sea, so
-    # the armour reads as a slope from crest to sea bed, as in TritoMoor
-    top = np.maximum(level, CREST) + sea
-    z = np.where(dry, np.minimum(top, sea + np.maximum(up, 0.0) / SLOPE),
-                 np.maximum(sea - BED, sea - np.maximum(down, 0.0) / SLOPE))
     # a breakwater: land in a strip no wider than twice THIN, all of it a rock mound with a
     # stone crest (its middle is never further than THIN from the sea)
     # (the works themselves count as water here: the photograph shows the old deck as land, and
@@ -107,6 +103,14 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
     far = np.asarray(Image.fromarray(up_t.astype(np.float32), "F").filter(ImageFilter.MaxFilter(2 * int(THIN / h) + 1)))
     global THIN_MASK
     THIN_MASK = dry & (far < THIN - h) & (up_t > 0)
+    # the land's own level, and at least +3 where it meets the sea, so the armour reads as a
+    # slope from crest to sea bed as in TritoMoor; a breakwater stands higher, its crest above
+    # the deck it shelters (rising to it over 10 m where it leaves the shore)
+    rise = np.clip((THIN - far) / 10.0, 0.0, 1.0) * (dry & (up_t > 0))
+    crest = CREST + (BREAKWATER_CREST - CREST) * rise
+    top = np.maximum(level, crest) + sea
+    z = np.where(dry, np.minimum(top, sea + np.maximum(up, 0.0) / SLOPE),
+                 np.maximum(sea - BED, sea - np.maximum(down, 0.0) / SLOPE))
     return z.astype(np.float32), z <= sea - BED + 1e-3, r
 
 
