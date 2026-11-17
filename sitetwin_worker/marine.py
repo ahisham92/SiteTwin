@@ -652,6 +652,8 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
         around["breakwater_blocks"] = surroundings.rock_mound(
             [(bx, fp[1] - 15.0), (bx, yh), (xe, yh)], BW_WIDTH, sea + surroundings.BREAKWATER_CREST,
             sea - surroundings.BED, free=(False, True))
+        reach_ = BW_WIDTH / 2 + 1.5 * (surroundings.BREAKWATER_CREST + surroundings.BED)
+        around["breakwater_box"] = (min(bx, xe) - reach_, fp[1], max(bx, xe) + reach_, yh + reach_)
         print("  modelled surroundings:", around)
     elif has_google:
         # the shore's own streets stay as Google has them: nothing is rebuilt near a site at sea
@@ -687,7 +689,12 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
         elev, az = S.build_light(manifest["lat"], manifest["lon"], when, 0, opts.fps)
     else:
         elev, az = S.build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)
-    build_camera(fp, top, tl, line[2], sea)
+    # the camera takes in the breakwater too, round head and all
+    view = fp
+    if around is not None and around.get("breakwater_box"):
+        b = around["breakwater_box"]
+        view = (min(fp[0], b[0]), min(fp[1], b[1]), max(fp[2], b[2]), max(fp[3], b[3]))
+    build_camera(view, top, tl, line[2], sea)
     S._all_constant_hides()
     S.configure_render(opts, tl.frames, out_dir)
     return {"setting": "marine", "clashes_removed": clashes, "google": got is not None, "modelled": around, "land_line": line,
