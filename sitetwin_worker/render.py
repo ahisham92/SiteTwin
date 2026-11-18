@@ -156,8 +156,9 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
 
     stage("surroundings")
     # SITETWIN_SURROUNDINGS=model: the place rebuilt from map data in the model's own style (see
-    # surroundings.py), wider, instead of Google's photo-real mesh
-    modelled = os.environ.get("SITETWIN_SURROUNDINGS", "") == "model" and marine
+    # surroundings.py), wider, instead of Google's photo-real mesh; the default for marine works
+    # (Ahmed, 2026-11-16: the surroundings in the same 3D style as the structure)
+    modelled = os.environ.get("SITETWIN_SURROUNDINGS", "model") == "model" and marine
     if modelled:
         radius = max(radius, float(os.environ.get("SITETWIN_SURROUNDINGS_RADIUS", 2500)))
     log(f"Fetching the surroundings of {lat:.5f}, {lon:.5f} (radius {radius:.0f} m)…")
