@@ -90,6 +90,18 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
         share = np.asarray(Image.fromarray((raw < 0.5).astype(np.float32)).resize((n, n), Image.BILINEAR))
     level = np.asarray(Image.fromarray(np.clip(raw, -20.0, 3000.0).astype(np.float32)).resize((n, n), Image.BILINEAR))
     dry = share < 0.5
+    # the sea is the water that reaches the edge of the square: pools, blue roofs and dark
+    # shade inland that the photograph reads as water stay land (they dug pits in the hills)
+    water = ~dry
+    reach = np.zeros_like(water)
+    reach[0, :], reach[-1, :], reach[:, 0], reach[:, -1] = water[0, :], water[-1, :], water[:, 0], water[:, -1]
+    while True:                                       # grow from the edge through water only
+        p = np.pad(reach, 1)
+        grown = (p[1:-1, 1:-1] | p[:-2, 1:-1] | p[2:, 1:-1] | p[1:-1, :-2] | p[1:-1, 2:]) & water
+        if (grown == reach).all():
+            break
+        reach = grown
+    dry = ~reach
     cells = max(int(math.ceil(SLOPE * (BED + BREAKWATER_CREST + 2.0) / h)), int(math.ceil(THIN / h)) + 1)
     up = _distance(dry, h, cells) - h / 2                      # metres in from the waterline
     down = _distance(~dry, h, cells) - h / 2                   # metres out from it
