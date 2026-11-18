@@ -22,6 +22,7 @@ and pumps that come along the jetty from the shore. So:
 from __future__ import annotations
 
 import math
+import os
 import random
 from pathlib import Path
 from typing import Any
@@ -681,11 +682,12 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     people = build_crews(elements, tl, line, machines, rng)
     clashes = S.check_clearance(people, machines, tl.frames)
     if around is not None:
-        # one steady morning light: the camera looks back south to the shore, and the sun of
+        # one steady late-morning light (SITETWIN_MARINE_HOUR, solar time): the camera looks back
+        # south to the shore; at nine the sun was so low the land sat in blue sky-shade; the sun of
         # midday (south) would shine straight into it off the water; at nine it comes from the
         # east-south-east, from the side, and the light no longer swings through the film
         import datetime as _dt
-        when = (opts.when or _dt.datetime.now()).replace(hour=9, minute=0)
+        when = (opts.when or _dt.datetime.now()).replace(hour=int(os.environ.get("SITETWIN_MARINE_HOUR", "11")), minute=0)
         elev, az = S.build_light(manifest["lat"], manifest["lon"], when, 0, opts.fps)
     else:
         elev, az = S.build_light(manifest["lat"], manifest["lon"], opts.when, tl.frames, opts.fps)

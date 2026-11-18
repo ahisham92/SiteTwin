@@ -47,8 +47,8 @@ BREAKWATER_CREST = float(__import__("os").environ.get("SITETWIN_BREAKWATER_CREST
 NEAR_WORKS = 60.0      # the photograph's breakwater strip this close to the works is redrawn
 THIN = 35.0            # land no further than this from the sea all across is a breakwater
 THIN_MASK = None       # set by heights(): the breakwaters' points
-LAND_RGB = None        # set by heights(): the ground's colour at each point, from the photograph
-TINT_BLUR = 16.0       # metres: the photograph's colour is smoothed this much (no draped detail)
+LAND_CLASS = None      # set by heights(): soil / green / paved at each point, from the photograph
+UP = None              # set by heights(): metres in from the waterline at each point
 
 
 def _distance(mask: np.ndarray, h: float, cells: int) -> np.ndarray:
@@ -85,10 +85,10 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
         wetp = ((bb > rr + 18) & (gg > rr + 12)).astype(np.uint8) * 255
         img = Image.fromarray(wetp).filter(ImageFilter.MedianFilter(7)).filter(ImageFilter.GaussianBlur(2.5))
         share = np.asarray(img.convert("F").resize((n, n), Image.BILINEAR)) / 255.0
-        _land_colour(rgb.astype(np.uint8), r, n)
+        _land_cover(rgb, n)
     else:
         share = np.asarray(Image.fromarray((raw < 0.5).astype(np.float32)).resize((n, n), Image.BILINEAR))
-    level = np.asarray(Image.fromarray(raw.astype(np.float32)).resize((n, n), Image.BILINEAR))
+    level = np.asarray(Image.fromarray(np.clip(raw, -20.0, 3000.0).astype(np.float32)).resize((n, n), Image.BILINEAR))
     dry = share < 0.5
     cells = max(int(math.ceil(SLOPE * (BED + BREAKWATER_CREST + 2.0) / h)), int(math.ceil(THIN / h)) + 1)
     up = _distance(dry, h, cells) - h / 2                      # metres in from the waterline
@@ -125,6 +125,11 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
     # the land's own level, and at least +3 where it meets the sea, so the armour reads as a
     # slope from crest to sea bed as in TritoMoor; a breakwater stands higher, its crest above
     # the deck it shelters (rising to it over 10 m where it leaves the shore)
+    # further in than the distances were counted is simply inland: the land at its own level
+    # (counting stops at ``cells``, which must not cap the hills behind the coast)
+    up = np.where(up >= cells * h - h, 1e6, up)
+    global UP
+    UP = up
     rise = np.clip((THIN - far) / 10.0, 0.0, 1.0) * (dry & (up_t > 0))
     crest = CREST + (BREAKWATER_CREST - CREST) * rise
     top = np.maximum(level, crest) + sea
@@ -133,45 +138,21 @@ def heights(manifest: dict[str, Any], folder: Path, sea: float,
     return z.astype(np.float32), z <= sea - BED + 1e-3, r
 
 
-def _land_colour(rgb: np.ndarray, r: float, n: int) -> None:
-    """The ground's own colours from the photograph, smoothed to fields, roads and yards (green
-    orchards, grey asphalt and yards, pale bare ground), so the land is not one even brown. Sea
-    pixels are filled from the nearest land so the coast does not pick up their teal."""
-    global LAND_RGB
-    px = 2 * r / rgb.shape[0]
-    rr, gg, bb = (rgb[..., k].astype(np.int16) for k in range(3))
-    wet = (bb > rr + 4) & (gg > rr + 4)          # wider than the waterline: shallows and surf too
-    lin = (rgb.astype(np.float32) / 255.0) ** 2.2
-    w = (~wet).astype(np.float32)
-    m = rgb.shape[0]
-    cells = max(4, int(round(m * px / TINT_BLUR)))
-    def blur(a, k):       # averaged over cells of TINT_BLUR (k times it), smoothly back up
-        im = Image.fromarray(a.astype(np.float32), "F").resize((max(2, cells // k),) * 2, Image.BOX)
-        return np.asarray(im.resize((m, m), Image.BILINEAR))
-    ws, wl = blur(w, 1), blur(w, 6)
-    out = []
-    for k in range(3):
-        c = lin[..., k] * w
-        near, wide = blur(c, 1) / np.maximum(ws, 1e-4), blur(c, 6) / np.maximum(wl, 1e-4)
-        t = np.clip(ws * 4.0, 0.0, 1.0)
-        out.append(near * t + wide * (1 - t))
-    col = np.stack(out, axis=-1)
-    # photographs from above are hazy and pale: a little deeper and a touch more saturated
-    grey = col.mean(axis=-1, keepdims=True)
-    col = np.clip((grey + (col - grey) * 1.5) * 0.8, 0.02, 0.8)
-    # land is never bluer than it is green or red (shallow water and haze tint the photo's edge)
-    col[..., 2] = np.minimum(col[..., 2], np.maximum(col[..., 0], col[..., 1]) * 0.95)
-    col[..., 1] = np.maximum(col[..., 1], col[..., 2])
-    small = [np.asarray(Image.fromarray(col[..., k], "F").resize((n, n), Image.BILINEAR)) for k in range(3)]
-    LAND_RGB = np.stack(small, axis=-1).astype(np.float32)
-
-
-def _paint(ob, colours: np.ndarray) -> None:
-    """Point colours (linear RGB, one per vertex) as the attribute 'photo' the land material reads."""
-    me = ob.data
-    a = me.color_attributes.new("photo", "FLOAT_COLOR", "POINT")
-    rgba = np.concatenate([colours.reshape(-1, 3), np.ones((len(me.vertices), 1), np.float32)], axis=1)
-    a.data.foreach_set("color", rgba.astype(np.float32).ravel())
+def _land_cover(rgb: np.ndarray, n: int) -> None:
+    """What covers the ground at each point, read from the photograph: 1 bare soil and dry
+    fields, 2 trees and green fields, 3 paved (asphalt, concrete yards, roofs). The photograph
+    here has a green cast (grey asphalt reads 50/54/41), so green means well clear of it, or
+    dark and green (tree crowns). Cleaned of specks, so each patch reads as a field or a yard."""
+    global LAND_CLASS
+    r, g, b = (rgb[..., k].astype(np.int16) for k in range(3))
+    wet = (b > r + 18) & (g > r + 12)
+    lum = (r + g + b) / 3.0
+    gm = g - (r + b) / 2.0
+    veg = (gm >= 15) & ((lum < 75) | (gm >= 26)) & ~wet
+    paved = ((r - b) < 18) & ~wet & ~veg
+    cls = np.where(veg, 2, np.where(paved, 3, 1)).astype(np.uint8)
+    im = Image.fromarray(cls).filter(ImageFilter.ModeFilter(5)).resize((n, n), Image.NEAREST)
+    LAND_CLASS = np.asarray(im.filter(ImageFilter.ModeFilter(3)))
 
 
 class Surface:
@@ -238,19 +219,24 @@ def build_ground(z: np.ndarray, wet: np.ndarray, r: float, keep: tuple[float, fl
     z4 = np.stack([z[:-1, :-1], z[1:, :-1], z[1:, 1:], z[:-1, 1:]], axis=-1).reshape(-1, 4)
     # the armour slope: any face that is not level (land tops are flat at their own level, the
     # coarse heights inland vary slowly); in blocks of about 9 m of two tones, as TritoMoor
-    slope = ((z4.max(axis=1) - z4.min(axis=1)) > 0.35 * h_of(r, n)) & (z4.min(axis=1) < sea + 8.0)
+    u4 = None
+    if UP is not None and UP.shape == z.shape:
+        u4 = np.stack([UP[:-1, :-1], UP[1:, :-1], UP[1:, 1:], UP[:-1, 1:]], axis=-1).reshape(-1, 4).min(axis=1)
+    coast = u4 < SLOPE * (BREAKWATER_CREST + 1.0) + 2 * h_of(r, n) if u4 is not None else np.ones(len(cx), bool)
+    slope = ((z4.max(axis=1) - z4.min(axis=1)) > 0.35 * h_of(r, n)) & (z4.min(axis=1) < sea + 8.0) & coast
     slope |= (s4.any(axis=1) | w4.any(axis=1)) & (z4.min(axis=1) < sea + 0.5)
     tone = ((np.floor(cx / 9.0) + np.floor(cy / 9.0)) % 2).astype(np.int32)
     mat = np.where(slope, 1 + tone, 0)
     if THIN_MASK is not None and THIN_MASK.shape == z.shape:
         t4 = np.stack([THIN_MASK[:-1, :-1], THIN_MASK[1:, :-1], THIN_MASK[1:, 1:], THIN_MASK[:-1, 1:]], axis=-1).reshape(-1, 4)
         mat = np.where((mat == 0) & t4.any(axis=1), 3, mat)          # a breakwater's crest
+    if LAND_CLASS is not None and LAND_CLASS.shape == z.shape:
+        cover = LAND_CLASS[:-1, :-1].reshape(-1)
+        mat = np.where(mat == 0, np.select([cover == 2, cover == 3], [4, 5], 0), mat)
     mat = mat[keep_face]
     faces = quads[keep_face]
-    ob = _mesh("land", verts, faces, ["land", "armour_a", "armour_b", "armour_top"], mat.astype(np.int32))
-    tint = LAND_RGB if LAND_RGB is not None and LAND_RGB.shape[:2] == z.shape else None
-    if tint is not None:
-        _paint(ob, tint)
+    _mesh("land", verts, faces, ["land", "armour_a", "armour_b", "armour_top", "land_green", "land_paved"],
+          mat.astype(np.int32))
     # the run-out: each edge point carried straight out to the horizon at its own level
     ring = ([(0, j) for j in range(n)] + [(i, n - 1) for i in range(1, n)]
             + [(n - 1, j) for j in range(n - 2, -1, -1)] + [(i, 0) for i in range(n - 2, 0, -1)])
@@ -269,10 +255,7 @@ def build_ground(z: np.ndarray, wet: np.ndarray, r: float, keep: tuple[float, fl
         rf.append((a0, b0, b0 + 1, a0 + 1))
         rm.append(0)
     if rf:
-        ro = _mesh("land_runout", rv, rf, ["land"], rm)
-        if tint is not None:
-            edge = np.array([tint[ii, jj] for ii, jj in ring if not wet[ii, jj]] or [(0.2, 0.2, 0.17)], np.float32)
-            _paint(ro, np.tile(edge.mean(axis=0), (len(rv), 1)))
+        _mesh("land_runout", rv, rf, ["land"], rm)
     return Surface(z, r)
 
 

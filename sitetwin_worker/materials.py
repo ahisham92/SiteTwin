@@ -358,31 +358,16 @@ def get(name: str):
         # limestone armour stone: pale grey-beige, each face a little different, rough
         _noise_mix(tree, bsdf, (0.24, 0.22, 0.19), (0.50, 0.47, 0.41), scale=0.9, detail=6, rough=(0.8, 1.0), bump=0.6)
     elif name == "land":
-        # the ground's own colours, from the aerial photograph smoothed to fields and yards
-        # (attribute 'photo'), over a quiet grey noise so it is never flat; ground without
-        # them is dry Levantine dust
-        _noise_mix(tree, bsdf, (0.80, 0.80, 0.80), (1.10, 1.10, 1.10), scale=0.05, detail=10, rough=(0.85, 1.0), bump=0.25)
-        n, ln = tree.nodes, tree.links
-        ramp = bsdf.inputs["Base Color"].links[0].from_node
-        attr = n.new("ShaderNodeAttribute")
-        attr.attribute_type = "GEOMETRY"
-        attr.attribute_name = "photo"
-        has = n.new("ShaderNodeMath")
-        has.operation = "GREATER_THAN"
-        has.inputs[1].default_value = 0.0
-        ln.new(attr.outputs["Fac"], has.inputs[0])
-        base = n.new("ShaderNodeMix")
-        base.data_type = "RGBA"
-        base.inputs["A"].default_value = (0.26, 0.21, 0.14, 1)
-        ln.new(has.outputs["Value"], base.inputs["Factor"])
-        ln.new(attr.outputs["Color"], base.inputs["B"])
-        mul = n.new("ShaderNodeMix")
-        mul.data_type = "RGBA"
-        mul.blend_type = "MULTIPLY"
-        mul.inputs["Factor"].default_value = 1.0
-        ln.new(base.outputs["Result"], mul.inputs["A"])
-        ln.new(ramp.outputs["Color"], mul.inputs["B"])
-        ln.new(mul.outputs["Result"], bsdf.inputs["Base Color"])
+        # dry Levantine fields and bare ground, as the photograph shows them: dusty tan
+        _noise_mix(tree, bsdf, (0.27, 0.20, 0.12), (0.38, 0.30, 0.19), scale=0.06, detail=10, rough=(0.85, 1.0), bump=0.25)
+    elif name == "land_green":
+        # tree crowns, orchards and irrigated fields seen from above: deep olive green
+        _noise_mix(tree, bsdf, (0.045, 0.075, 0.025), (0.11, 0.15, 0.055), scale=0.35, detail=8, rough=(0.8, 1.0), bump=0.5)
+    elif name == "land_paved":
+        # asphalt, concrete yards and hard standing: neutral grey, worn in patches
+        # (warm, as sun-bleached concrete and dusty asphalt are: a neutral grey reads as water
+        # under the blue sky light from this low view)
+        _noise_mix(tree, bsdf, (0.12, 0.115, 0.10), (0.20, 0.19, 0.165), scale=0.08, detail=8, rough=(0.75, 0.95), bump=0.1)
     elif name == "greenhouse":
         # white plastic sheeting over light frames
         _noise_mix(tree, bsdf, (0.70, 0.72, 0.72), (0.82, 0.84, 0.84), scale=0.5, rough=(0.35, 0.6), bump=0.05)
@@ -444,6 +429,10 @@ def get(name: str):
         bsdf.inputs["Roughness"].default_value = 0.7
     else:
         bsdf.inputs["Base Color"].default_value = (0.6, 0.6, 0.6, 1)
+    if name in ("land", "land_green", "land_paved", "armour_a", "armour_b", "armour_top", "road_worn", "grass", "sand"):
+        # open ground seen low from far off: no sky sheen (at a glancing view even rough
+        # ground mirrors the pale sky and the land turns a washed-out blue-white)
+        bsdf.inputs["Specular IOR Level"].default_value = 0.08
     _cache[name] = m
     return m
 
