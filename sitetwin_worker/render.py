@@ -122,10 +122,12 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
         seconds: float = 90, quality: str = "draft", title: str | None = None,
         when: dt.datetime | None = None, frames: list[int] | None = None, log=print,
         chunk: tuple[int, int] | None = None, prepare_only: bool = False,
-        on_stage=None, on_frame=None, fly_in: bool = True) -> dict[str, Any]:
+        on_stage=None, on_frame=None, fly_in: bool = True, survey: Path | None = None,
+        survey_place: dict[str, Any] | None = None) -> dict[str, Any]:
     """Render the film. ``chunk=(first, last)`` renders only those frames and encodes them as
     one segment (for splitting a film across several GPUs); ``prepare_only`` fetches the
-    surroundings and plans the timeline, and stops there."""
+    surroundings and plans the timeline, and stops there. ``survey`` is a drone survey's folder
+    (made by survey.normalise) to stand in the surroundings, placed by ``survey_place``."""
     from . import environment, model, sequence
     from sitetwin_app import ifc as ifc_text
 
@@ -170,6 +172,9 @@ def run(ifc: Path, out: Path, lat: float | None = None, lon: float | None = None
     if manifest.get("google"):                     # Google's mesh replaces the terrain, imagery and OSM
         manifest = dict(manifest, credits=[c for c in manifest.get("credits", [])
                                            if not c.startswith(("Terrain", "Imagery", "Buildings"))])
+    if survey is not None and (Path(survey) / "survey.json").exists():
+        manifest = dict(manifest, survey={"folder": str(survey), "place": survey_place or {}},
+                        credits=list(manifest.get("credits", [])) + ["Surroundings near the site: drone survey"])
     from . import assets, equipment
     cache = Path(os.environ.get("SITETWIN_ASSET_CACHE", str(out / "models")))
     models, model_credits = assets.prepare(cache, log=log)
@@ -279,6 +284,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--quality", choices=list(QUALITY), default="draft")
     r.add_argument("--title")
     r.add_argument("--frames", help="only these frames, e.g. 1,120,400 (stills for checking)")
+    r.add_argument("--survey", type=Path, help="a drone survey's folder (see survey.normalise)")
+    r.add_argument("--survey-place", default="{}", help='its placement, e.g. {"east": 5, "turn": 30, "width": 250}')
+    d = sub.add_parser("survey", help="make a drone survey ready: level, centre, compress, plan picture")
+    d.add_argument("source", type=Path, help="an OpenDroneMap result zip, a zip of an OBJ, or a .glb")
+    d.add_argument("--out", type=Path, default=Path("survey"))
     v = sub.add_parser("serve", help="take render jobs from a SiteTwin site, forever")
     v.add_argument("--site", required=True, help="SiteTwin's address, e.g. https://example.com/sitetwin")
     v.add_argument("--every", type=float, default=20, help="seconds between asking for work")
@@ -288,9 +298,14 @@ def main(argv: list[str] | None = None) -> int:
         from .serve import serve
         serve(a.site, every=a.every, once=a.once)
         return 0
+    if a.cmd == "survey":
+        from .survey import normalise
+        print(json.dumps(normalise(a.source, a.out), indent=1))
+        return 0
     if a.cmd == "render":
         frames = [int(x) for x in a.frames.split(",")] if a.frames else None
-        res = run(a.ifc, a.out, a.lat, a.lon, a.radius, a.seconds, a.quality, a.title, frames=frames)
+        res = run(a.ifc, a.out, a.lat, a.lon, a.radius, a.seconds, a.quality, a.title, frames=frames,
+                  survey=a.survey, survey_place=json.loads(a.survey_place))
         print(json.dumps({k: v for k, v in res.items() if k != "manifest"}, indent=1, default=str))
     return 0
 

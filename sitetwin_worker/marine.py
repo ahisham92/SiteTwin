@@ -622,6 +622,7 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     top = float(max(e.hi[2] for e in built))
     keep_out = (fp[0] - 1.5, fp[1] - 1.5, fp[2] + 1.5, fp[3] + 1.5)
     g = S.Ground(manifest, env_folder, keep_out)
+    before_env = set(bpy.data.objects)
     has_google = bool(manifest.get("google")) and not manifest.get("modelled")
     got = None
     around = None
@@ -642,6 +643,11 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
         S.build_base(g, min(-3.0, got[1] - 3.0), float(manifest["google"].get("horizon", g.radius)))
     else:
         S.build_terrain(g, manifest, env_folder)
+    if manifest.get("survey"):
+        # the drone survey in place of the surroundings it covers (its water cut away: the sea
+        # below shows through)
+        from . import survey as SV
+        SV.add_to_scene(manifest, keep_out, [o for o in bpy.data.objects if o not in before_env], sea=sea)
     # under Google's sea everywhere: it shows where the old deck was cut out and through any
     # hole in Google's mesh, so the sea never shows white
     reach = (25000.0 if around is not None else

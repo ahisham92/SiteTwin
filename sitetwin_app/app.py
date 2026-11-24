@@ -24,6 +24,9 @@ from .store import Store, StoreError
 SITE_KEY = "sitetwin.site"
 
 MAX_MODEL_MB = 500
+#: What a drone survey may be sent as: video and its GPS track, photos, or a finished model.
+SURVEY_TYPES = (".mp4", ".mov", ".avi", ".mkv", ".m4v", ".ts", ".srt", ".jpg", ".jpeg", ".tif", ".tiff",
+                ".png", ".dng", ".zip", ".glb")
 
 #: Answered without the site's sign-in: the stylesheet, and the render worker's API,
 #: where every call carries the worker's own token (SITETWIN_WORKER_TOKEN).
@@ -125,7 +128,8 @@ def create_app(store: Store | None = None) -> Flask:
 
     @app.errorhandler(413)
     def _too_big(exc):
-        return _store_error(StoreError(413, f"The model is bigger than {MAX_MODEL_MB} MB."))
+        return _store_error(StoreError(413, f"That is bigger than {MAX_MODEL_MB} MB. For a drone video, send a "
+                                            "shorter cut (a minute or two of slow flying is plenty)."))
 
     def account() -> dict[str, Any]:
         site = request.environ.get(SITE_KEY)
@@ -174,6 +178,19 @@ def create_app(store: Store | None = None) -> Flask:
         out["estimate"] = estimate(job["quality"], job["seconds"])
         return out
 
+    def survey_view(project: dict[str, Any]) -> dict[str, Any] | None:
+        """The drone survey as the page shows it: how far it is, its plan and where it goes."""
+        if not project.get("survey_name"):
+            return None
+        info = project.get("survey_info") or {}
+        out = {"name": project["survey_name"], "state": project.get("survey_state"),
+               "message": project.get("survey_message"), "place": project.get("survey_place") or {},
+               "metric": bool(info.get("metric")), "extent": info.get("extent"),
+               "centre": info.get("centre"), "faces": info.get("faces"), "notes": info.get("notes") or []}
+        if project.get("survey_state") == "ready" and info.get("plan"):
+            out["plan_url"] = url_for("survey_plan", pid=project["id"], v=int(info.get("made") or 0))
+        return out
+
     def state(pid: int, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         who = account()
         project = app.store.project(who["id"], pid)
@@ -182,7 +199,8 @@ def create_app(store: Store | None = None) -> Flask:
         done = next((j for j in jobs if j["status"] == "done"), None)
         out = {"project": project, "stages": stage_states(project, job, done),
                "job": job_view(pid, job), "done": job_view(pid, done),
-               "history": [job_view(pid, j) for j in jobs[:10]], "machine": machine()}
+               "history": [job_view(pid, j) for j in jobs[:10]], "machine": machine(),
+               "survey": survey_view(project)}
         if extra:
             out.update(extra)
         return out
@@ -336,6 +354,61 @@ def create_app(store: Store | None = None) -> Flask:
         app.store.set_model(who["id"], pid, upload.filename, summary.as_dict())
         return done_or_back(pid)
 
+    # ---- the drone survey ------------------------------------------------------------
+
+    @app.post("/projects/<int:pid>/survey")
+    def upload_survey(pid: int):
+        """A drone video (with its .SRT track if there is one), drone photos, or a finished
+        photogrammetry model (.zip of an OBJ, or .glb): kept, then made ready by the worker."""
+        who = account()
+        app.store.project(who["id"], pid)
+        files = [f for f in request.files.getlist("survey") if f and f.filename]
+        if not files:
+            raise StoreError(400, "Choose the drone video, the photos, or the model (.zip or .glb).")
+        names = [f.filename for f in files]
+        bad = [n for n in names if not n.lower().endswith(SURVEY_TYPES)]
+        if bad:
+            raise StoreError(400, f"SiteTwin cannot use {bad[0]}: send a video (.mp4, .mov), its .srt, "
+                                  "photos (.jpg), or a model (.zip of an OBJ, or .glb).")
+        if all(n.lower().endswith(".srt") for n in names):
+            raise StoreError(400, "Send the video with its .srt file.")
+        import shutil
+        from werkzeug.utils import secure_filename
+        folder = app.store.project_folder(pid) / "survey"
+        shutil.rmtree(folder, ignore_errors=True)
+        (folder / "source").mkdir(parents=True)
+        for i, f in enumerate(files):
+            f.save(folder / "source" / (secure_filename(f.filename) or f"file{i}"))
+        label = names[0] if len(names) == 1 else f"{names[0]} and {len(names) - 1} more"
+        app.store.queue_survey(who["id"], pid, label)
+        wake_renderer()
+        return done_or_back(pid)
+
+    @app.post("/projects/<int:pid>/survey/place")
+    def place_survey(pid: int):
+        who = account()
+        form = request.get_json(silent=True) or request.form
+        app.store.set_survey_place(who["id"], pid, {k: form.get(k) for k in ("east", "north", "up", "turn",
+                                                                             "width", "scale")})
+        return done_or_back(pid)
+
+    @app.post("/projects/<int:pid>/survey/delete")
+    def delete_survey(pid: int):
+        who = account()
+        app.store.drop_survey(who["id"], pid)
+        import shutil
+        shutil.rmtree(app.store.project_folder(pid) / "survey", ignore_errors=True)
+        return done_or_back(pid)
+
+    @app.get("/projects/<int:pid>/survey/plan.png")
+    def survey_plan(pid: int):
+        who = account()
+        app.store.project(who["id"], pid)
+        path = app.store.project_folder(pid) / "survey" / "plan.png"
+        if not path.exists():
+            abort(404)
+        return send_file(path, mimetype="image/png", max_age=86400)
+
     @app.post("/projects/<int:pid>/location")
     def set_location(pid: int):
         who = account()
@@ -384,9 +457,60 @@ def create_app(store: Store | None = None) -> Flask:
         if job is None:
             return jsonify(job=None)
         p = app.store.project(job["owner"], job["project_id"])
-        return jsonify(job=job, project={"id": p["id"], "name": p["name"], "latitude": p["latitude"],
-                                         "longitude": p["longitude"], "model_name": p["model_name"]},
-                       model_url=url_for("worker_model", jid=job["id"]))
+        project = {"id": p["id"], "name": p["name"], "latitude": p["latitude"],
+                   "longitude": p["longitude"], "model_name": p["model_name"]}
+        folder = app.store.project_folder(p["id"]) / "survey"
+        if job.get("kind") == "survey":
+            app.store.survey_progress(p["id"], "Picked up by the cloud machine")
+            sources = sorted(x.name for x in (folder / "source").iterdir()) if (folder / "source").exists() else []
+            return jsonify(job=job, project=project,
+                           sources=[url_for("worker_survey_source", jid=job["id"], name=n) for n in sources])
+        extra: dict[str, Any] = {}
+        if p.get("survey_state") == "ready" and (folder / "survey.zip").exists():
+            extra = {"survey_url": url_for("worker_survey", jid=job["id"]), "survey_place": p.get("survey_place") or {}}
+        return jsonify(job=job, project=project, model_url=url_for("worker_model", jid=job["id"]), **extra)
+
+    @app.get("/api/worker/jobs/<int:jid>/survey/<path:name>")
+    def worker_survey_source(jid: int, name: str):
+        worker()
+        job = running(jid)
+        folder = app.store.project_folder(job["project_id"]) / "survey" / "source"
+        path = (folder / name).resolve()
+        if path.parent != folder.resolve() or not path.exists():
+            abort(404)
+        return send_file(path, download_name=name)
+
+    @app.get("/api/worker/jobs/<int:jid>/survey.zip")
+    def worker_survey(jid: int):
+        worker()
+        job = running(jid)
+        path = app.store.project_folder(job["project_id"]) / "survey" / "survey.zip"
+        if not path.exists():
+            abort(404)
+        return send_file(path, mimetype="application/zip", download_name="survey.zip")
+
+    @app.post("/api/worker/jobs/<int:jid>/survey")
+    def worker_survey_done(jid: int):
+        """The survey made ready: a zip of survey.glb, survey.json and plan.png."""
+        worker()
+        job = running(jid)
+        if job.get("kind") != "survey":
+            raise StoreError(409, "That job is not a survey.")
+        upload = request.files.get("survey")
+        if upload is None:
+            raise StoreError(400, "Send the survey.")
+        import shutil
+        import zipfile
+        folder = app.store.project_folder(job["project_id"]) / "survey"
+        folder.mkdir(exist_ok=True)
+        upload.save(folder / "survey.zip")
+        with zipfile.ZipFile(folder / "survey.zip") as z:
+            info = json.loads(z.read("survey.json"))
+            if "plan.png" in z.namelist():
+                (folder / "plan.png").write_bytes(z.read("plan.png"))
+        info["made"] = time.time()
+        shutil.rmtree(folder / "source", ignore_errors=True)      # the video is big and done with
+        return jsonify(job=app.store.survey_done(jid, info, request.form.get("message", "")))
 
     @app.get("/api/worker/jobs/<int:jid>/model.ifc")
     def worker_model(jid: int):
@@ -400,6 +524,9 @@ def create_app(store: Store | None = None) -> Flask:
         worker()
         running(jid)
         data = request.get_json(silent=True) or {}
+        job = app.store.job(jid)
+        if job.get("kind") == "survey":
+            app.store.survey_progress(job["project_id"], data.get("message", ""))
         app.store.progress(jid, data.get("percent", 0), data.get("message", ""),
                            **{k: data.get(k) for k in ("stage", "frames_done", "frames_total", "gpus", "cost")})
         return jsonify(ok=True)
@@ -433,6 +560,8 @@ def create_app(store: Store | None = None) -> Flask:
         worker()
         running(jid)
         data = request.get_json(silent=True) or {}
+        if app.store.job(jid).get("kind") == "survey":
+            return jsonify(job=app.store.survey_done(jid, None, data.get("message", "The survey could not be made.")))
         return jsonify(job=app.store.finish(jid, None, data.get("message", "The render failed.")))
 
     # ---- API ---------------------------------------------------------------

@@ -29,8 +29,8 @@ def test_the_worker_takes_a_job_and_delivers_the_film(tmp_path, monkeypatch):
 
     seen = {}
 
-    def fake_run(ifc, out, lat, lon, seconds, quality, title, log, on_stage, on_frame):
-        seen.update(ifc=Path(ifc).read_bytes()[:12], lat=lat, quality=quality, title=title)
+    def fake_run(ifc, out, lat, lon, seconds, quality, title, log, on_stage, on_frame, survey=None, survey_place=None):
+        seen.update(ifc=Path(ifc).read_bytes()[:12], lat=lat, quality=quality, title=title, survey=survey)
         on_stage("frames")
         out.mkdir(parents=True, exist_ok=True)
         frame = out / "frame_00001.png"
