@@ -308,7 +308,18 @@ def gather(lat: float, lon: float, radius: float, folder: Path, sources: Sources
         manifest["missing"]["google 3D"] = str(exc)
 
     try:
-        feats = fetch_osm(local, radius, fetch, sources.overpass)
+        try:
+            feats = fetch_osm(local, radius, fetch, sources.overpass)
+            if not any(f.get("kind") == "building" for f in feats):
+                raise LookupError("no buildings came back")
+        except Exception:
+            # Overpass is busy now and then: a place we have filmed before keeps a copy of its map
+            # (features in metres from the same point), so a film never loses its whole town
+            from .osm_kept import get as kept_osm
+            feats = kept_osm(lat, lon)
+            if not feats:
+                raise
+            manifest["osm_kept_copy"] = True
         (folder / "osm.json").write_text(json.dumps(feats))
         if getattr(fetch_osm, "last_raw", None):
             (folder / "osm_raw.json").write_text(json.dumps(fetch_osm.last_raw))
