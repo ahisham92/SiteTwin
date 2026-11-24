@@ -198,7 +198,7 @@ def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str
 
 @app.local_entrypoint()
 def sample(ifc: str = "samples/sample-building.ifc", lat: float = 33.66, lon: float = 35.42,
-           seconds: float = 60, quality: str = "draft", title: str = "SiteTwin sample", out: str = "film.mp4",
+           seconds: float = 60, quality: str = "draft", title: str = "", out: str = "film.mp4",
            earth: str = "no"):
     got = sample_film.remote(Path(ifc).read_bytes(), lat, lon, seconds, quality, title, earth == "yes")
     Path(out).write_bytes(got.pop("video"))

@@ -225,6 +225,84 @@ def _facade_real(tree, bsdf) -> None:
     ln.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
 
 
+def land_cover(img, r: float):
+    """Open ground from a cover mask (``img``: red = trees and green fields, green = paving,
+    mapped over the square of half-size ``r``): soil, olive green and worn grey, each with its
+    own grain, meeting in soft edges broken up by noise."""
+    import bpy
+    m, bsdf, tree = _principled("st_land_cover")
+    n, ln = tree.nodes, tree.links
+    tc = n.new("ShaderNodeTexCoord")
+    mp = n.new("ShaderNodeMapping")
+    mp.inputs["Location"].default_value = (0.5, 0.5, 0.0)
+    mp.inputs["Scale"].default_value = (0.5 / r, 0.5 / r, 1.0)
+    ln.new(tc.outputs["Object"], mp.inputs["Vector"])
+    tx = n.new("ShaderNodeTexImage")
+    tx.image = img
+    tx.interpolation = "Linear"
+    tx.extension = "CLIP"
+    ln.new(mp.outputs["Vector"], tx.inputs["Vector"])
+    sep = n.new("ShaderNodeSeparateColor")
+    ln.new(tx.outputs["Color"], sep.inputs["Color"])
+    wob = n.new("ShaderNodeTexNoise")
+    wob.inputs["Scale"].default_value = 0.4
+    wob.inputs["Detail"].default_value = 6
+    ln.new(tc.outputs["Object"], wob.inputs["Vector"])
+
+    def edge(chan):
+        add = n.new("ShaderNodeMath")
+        add.operation = "ADD"
+        ln.new(chan, add.inputs[0])
+        sub = n.new("ShaderNodeMath")
+        sub.operation = "MULTIPLY_ADD"
+        ln.new(wob.outputs["Fac"], sub.inputs[0])
+        sub.inputs[1].default_value = 0.5
+        sub.inputs[2].default_value = -0.25
+        ln.new(sub.outputs[0], add.inputs[1])
+        mr = n.new("ShaderNodeMapRange")
+        mr.interpolation_type = "SMOOTHSTEP"
+        mr.inputs["From Min"].default_value = 0.4
+        mr.inputs["From Max"].default_value = 0.6
+        ln.new(add.outputs[0], mr.inputs["Value"])
+        return mr.outputs["Result"]
+
+    def grain(c1, c2, scale):
+        nz = n.new("ShaderNodeTexNoise")
+        nz.inputs["Scale"].default_value = scale
+        nz.inputs["Detail"].default_value = 8
+        ln.new(tc.outputs["Object"], nz.inputs["Vector"])
+        rp = n.new("ShaderNodeValToRGB")
+        rp.color_ramp.elements[0].color = (*c1, 1)
+        rp.color_ramp.elements[1].color = (*c2, 1)
+        ln.new(nz.outputs["Fac"], rp.inputs["Fac"])
+        return rp.outputs["Color"]
+
+    soil = grain((0.27, 0.20, 0.12), (0.38, 0.30, 0.19), 0.06)
+    green = grain((0.045, 0.075, 0.025), (0.11, 0.15, 0.055), 0.35)
+    paved = grain((0.15, 0.13, 0.10), (0.23, 0.21, 0.17), 0.08)
+    a = n.new("ShaderNodeMix")
+    a.data_type = "RGBA"
+    ln.new(edge(sep.outputs["Red"]), a.inputs["Factor"])
+    ln.new(soil, a.inputs["A"])
+    ln.new(green, a.inputs["B"])
+    b = n.new("ShaderNodeMix")
+    b.data_type = "RGBA"
+    ln.new(edge(sep.outputs["Green"]), b.inputs["Factor"])
+    ln.new(a.outputs["Result"], b.inputs["A"])
+    ln.new(paved, b.inputs["B"])
+    ln.new(b.outputs["Result"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.92
+    bsdf.inputs["Specular IOR Level"].default_value = 0.08
+    bump = n.new("ShaderNodeBump")
+    bump.inputs["Strength"].default_value = 0.25
+    fine = n.new("ShaderNodeTexNoise")
+    fine.inputs["Scale"].default_value = 2.0
+    ln.new(tc.outputs["Object"], fine.inputs["Vector"])
+    ln.new(fine.outputs["Fac"], bump.inputs["Height"])
+    ln.new(bump.outputs["Normal"], bsdf.inputs["Normal"])
+    return m
+
+
 def get(name: str):
     """A material by its role, made once."""
     if name in _cache:
@@ -360,6 +438,9 @@ def get(name: str):
     elif name == "land":
         # dry Levantine fields and bare ground, as the photograph shows them: dusty tan
         _noise_mix(tree, bsdf, (0.27, 0.20, 0.12), (0.38, 0.30, 0.19), scale=0.06, detail=10, rough=(0.85, 1.0), bump=0.25)
+    elif name == "tree_crown":
+        # olive, carob and citrus crowns from the air: deep green with lighter tops
+        _noise_mix(tree, bsdf, (0.035, 0.06, 0.02), (0.10, 0.15, 0.05), scale=0.8, detail=6, rough=(0.75, 0.95), bump=0.6)
     elif name == "land_green":
         # tree crowns, orchards and irrigated fields seen from above: deep olive green
         _noise_mix(tree, bsdf, (0.045, 0.075, 0.025), (0.11, 0.15, 0.055), scale=0.35, detail=8, rough=(0.8, 1.0), bump=0.5)
@@ -367,7 +448,7 @@ def get(name: str):
         # asphalt, concrete yards and hard standing: neutral grey, worn in patches
         # (warm, as sun-bleached concrete and dusty asphalt are: a neutral grey reads as water
         # under the blue sky light from this low view)
-        _noise_mix(tree, bsdf, (0.12, 0.115, 0.10), (0.20, 0.19, 0.165), scale=0.08, detail=8, rough=(0.75, 0.95), bump=0.1)
+        _noise_mix(tree, bsdf, (0.15, 0.13, 0.10), (0.23, 0.21, 0.17), scale=0.08, detail=8, rough=(0.75, 0.95), bump=0.1)
     elif name == "greenhouse":
         # white plastic sheeting over light frames
         _noise_mix(tree, bsdf, (0.70, 0.72, 0.72), (0.82, 0.84, 0.84), scale=0.5, rough=(0.35, 0.6), bump=0.05)

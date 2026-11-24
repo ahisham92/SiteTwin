@@ -48,6 +48,7 @@ NEAR_WORKS = 60.0      # the photograph's breakwater strip this close to the wor
 THIN = 35.0            # land no further than this from the sea all across is a breakwater
 THIN_MASK = None       # set by heights(): the breakwaters' points
 LAND_CLASS = None      # set by heights(): soil / green / paved at each point, from the photograph
+COVER_FULL = None      # the same at the photograph's own resolution (for the ground texture and trees)
 UP = None              # set by heights(): metres in from the waterline at each point
 
 
@@ -163,8 +164,91 @@ def _land_cover(rgb: np.ndarray, n: int) -> None:
     veg = (gm >= 15) & ((lum < 75) | (gm >= 26)) & ~wet
     paved = ((r - b) < 18) & ~wet & ~veg
     cls = np.where(veg, 2, np.where(paved, 3, 1)).astype(np.uint8)
-    im = Image.fromarray(cls).filter(ImageFilter.ModeFilter(5)).resize((n, n), Image.NEAREST)
+    full = Image.fromarray(cls).filter(ImageFilter.ModeFilter(5))
+    im = full.resize((n, n), Image.NEAREST)
     LAND_CLASS = np.asarray(im.filter(ImageFilter.ModeFilter(3)))
+    global COVER_FULL
+    COVER_FULL = np.asarray(full)
+
+
+def cover_texture(r: float):
+    """The open ground as one material: dusty soil, olive green where the photograph shows trees
+    and green fields, worn grey where it shows paving, read from a soft mask at the photograph's
+    own 1.5 m and broken up by noise, so patches meet in natural curved edges, not 3 m steps."""
+    if COVER_FULL is None:
+        return None
+    import tempfile
+    import bpy
+    c = COVER_FULL
+    soft = [np.asarray(Image.fromarray(((c == k) * 255).astype(np.uint8)).filter(ImageFilter.GaussianBlur(1.2)))
+            for k in (2, 3)]
+    rgb = np.stack([soft[0], soft[1], np.zeros_like(soft[0])], axis=-1).astype(np.uint8)
+    path = Path(tempfile.mkdtemp()) / "cover.png"
+    Image.fromarray(rgb).save(path)
+    img = bpy.data.images.load(str(path))
+    img.colorspace_settings.name = "Non-Color"
+    img.pack()
+    return M.land_cover(img, r)
+
+
+def _hash(*v) -> float:
+    x = math.sin(sum(a * b for a, b in zip(v, (12.9898, 78.233, 37.719)))) * 43758.5453
+    return x - math.floor(x)
+
+
+#: plaster and stone of the coast's houses and blocks, seen from the air in daylight
+WALLS = [(0.62, 0.57, 0.49), (0.70, 0.66, 0.58), (0.56, 0.52, 0.46), (0.66, 0.64, 0.60),
+         (0.60, 0.50, 0.38), (0.72, 0.70, 0.66), (0.52, 0.49, 0.44)]
+ROOFS = [(0.46, 0.45, 0.42), (0.52, 0.50, 0.46), (0.40, 0.39, 0.37), (0.45, 0.24, 0.16)]
+
+
+def plant_trees(ground: "Surface", wet: np.ndarray, keep, sea: float, reach: float = 900.0,
+                spacing: float = 6.0) -> int:
+    """Tree crowns on the photograph's green patches (orchards, gardens, roadside trees) out to
+    ``reach`` metres from the works: a short trunk and a rounded crown, each its own size."""
+    if COVER_FULL is None:
+        return 0
+    import bmesh
+    import bpy
+    c = COVER_FULL
+    m = c.shape[0]
+    r = ground.r
+    k0, k1, k2, k3 = keep
+    cx, cy = (k0 + k1) / 2, (k2 + k3) / 2
+    crowns, trunks = bmesh.new(), bmesh.new()
+    count = 0
+    for y in np.arange(-r, r, spacing):
+        for x in np.arange(-r, r, spacing):
+            if math.hypot(x - cx, y - cy) > reach:
+                continue
+            jx = x + (_hash(x, y, 1) - 0.5) * spacing * 0.8
+            jy = y + (_hash(x, y, 2) - 0.5) * spacing * 0.8
+            j = int((jx + r) / (2 * r) * (m - 1))
+            i = int((r - jy) / (2 * r) * (m - 1))
+            if not (0 <= i < m and 0 <= j < m) or c[i, j] != 2:
+                continue
+            if k0 - 8 < jx < k1 + 8 and k2 - 8 < jy < k3 + 8:
+                continue
+            z = ground.at(jx, jy)
+            if z < sea + 1.0:
+                continue
+            rad = 1.8 + 1.6 * _hash(jx, jy, 3)
+            h = 1.6 + 1.2 * _hash(jx, jy, 4)
+            bmesh.ops.create_icosphere(crowns, subdivisions=2, radius=rad,
+                                       matrix=_translate(jx, jy, z + h + rad * 0.75) @ _scale(1.0, 1.0, 0.8))
+            bmesh.ops.create_cone(trunks, cap_ends=False, segments=5, radius1=0.18, radius2=0.12, depth=h + 0.5,
+                                  matrix=_translate(jx, jy, z + (h + 0.5) / 2))
+            count += 1
+    for name, bm, mat in (("trees_crowns", crowns, "tree_crown"), ("trees_trunks", trunks, "wood")):
+        me = bpy.data.meshes.new(name)
+        bm.to_mesh(me)
+        bm.free()
+        for p in me.polygons:
+            p.use_smooth = True
+        me.materials.append(M.get(mat))
+        ob = bpy.data.objects.new(name, me)
+        bpy.context.scene.collection.objects.link(ob)
+    return count
 
 
 class Surface:
@@ -242,13 +326,16 @@ def build_ground(z: np.ndarray, wet: np.ndarray, r: float, keep: tuple[float, fl
     if THIN_MASK is not None and THIN_MASK.shape == z.shape:
         t4 = np.stack([THIN_MASK[:-1, :-1], THIN_MASK[1:, :-1], THIN_MASK[1:, 1:], THIN_MASK[:-1, 1:]], axis=-1).reshape(-1, 4)
         mat = np.where((mat == 0) & t4.any(axis=1), 3, mat)          # a breakwater's crest
-    if LAND_CLASS is not None and LAND_CLASS.shape == z.shape:
+    tex = cover_texture(r)
+    if tex is None and LAND_CLASS is not None and LAND_CLASS.shape == z.shape:
         cover = LAND_CLASS[:-1, :-1].reshape(-1)
         mat = np.where(mat == 0, np.select([cover == 2, cover == 3], [4, 5], 0), mat)
     mat = mat[keep_face]
     faces = quads[keep_face]
-    _mesh("land", verts, faces, ["land", "armour_a", "armour_b", "armour_top", "land_green", "land_paved"],
-          mat.astype(np.int32))
+    ob = _mesh("land", verts, faces, ["land", "armour_a", "armour_b", "armour_top", "land_green", "land_paved"],
+               mat.astype(np.int32))
+    if tex is not None:
+        ob.data.materials[0] = tex
     # the run-out: each edge point carried straight out to the horizon at its own level
     ring = ([(0, j) for j in range(n)] + [(i, n - 1) for i in range(1, n)]
             + [(n - 1, j) for j in range(n - 2, -1, -1)] + [(i, 0) for i in range(n - 2, 0, -1)])
@@ -299,6 +386,16 @@ def build_osm(feats: list[dict[str, Any]], ground: Surface, wet: np.ndarray, kee
             meshes[mat] = bmesh.new()
         return meshes[mat]
 
+    def facades():
+        if "facade_real" not in meshes:
+            b = bmesh.new()
+            b.faces.layers.float_color.new("wall")
+            b.faces.layers.float_color.new("roof")
+            b.faces.layers.float.new("base")
+            b.faces.layers.float.new("top")
+            meshes["facade_real"] = b
+        return meshes["facade_real"]
+
     counts = {"buildings": 0, "greenhouses": 0, "tanks": 0, "roads": 0}
     for f in feats:
         pts = f["points"]
@@ -323,22 +420,51 @@ def build_osm(feats: list[dict[str, Any]], ground: Surface, wet: np.ndarray, kee
                 counts["tanks"] += 1
                 continue
             green = f.get("use") == "greenhouse"
-            h = 3.4 if green else float(f.get("height") or 9.0)
-            walls, roof = ("greenhouse", "greenhouse") if green else ("facade", "roof")
-            bw, br = bm_for(walls), bm_for(roof)
-            top = base + 0.3 + h
             ring2 = ring if _area(ring) > 0 else ring[::-1]             # anticlockwise
-            for (x0, y0), (x1, y1) in zip(ring2, ring2[1:] + ring2[:1]):
-                vs = [bw.verts.new(v) for v in ((x0, y0, base), (x1, y1, base), (x1, y1, top), (x0, y0, top))]
+            if green:
+                h = 3.4
+                bw = br = bm_for("greenhouse")
+                top = base + 0.3 + h
+                for (x0, y0), (x1, y1) in zip(ring2, ring2[1:] + ring2[:1]):
+                    vs = [bw.verts.new(v) for v in ((x0, y0, base), (x1, y1, base), (x1, y1, top), (x0, y0, top))]
+                    try:
+                        bw.faces.new(vs)
+                    except ValueError:
+                        pass
                 try:
-                    bw.faces.new(vs)
+                    br.faces.new([br.verts.new((x, y, top)) for x, y in ring2])
+                except ValueError:
+                    pass
+                counts["greenhouses"] += 1
+                continue
+            # a house or block: rendered walls in one of the coast's colours, a floor every
+            # 3.2 m with window bays (materials 'facade_real'), a flat roof behind a parapet;
+            # two to five storeys where the map gives no height
+            area = abs(_area(ring2))
+            storeys = 2 + int(_hash(cx, cy, 5) * (4 if area > 120 else 2))
+            h = float(f.get("height") or storeys * 3.2)
+            if f.get("use") == "industrial" or area > 1500:
+                h = float(f.get("height") or 9.0)
+            top = base + 0.3 + h
+            bf = facades()
+            wall = WALLS[int(_hash(cx, cy, 6) * len(WALLS)) % len(WALLS)]
+            roofc = ROOFS[int(_hash(cx, cy, 7) * len(ROOFS)) % len(ROOFS)]
+            made = []
+            for (x0, y0), (x1, y1) in zip(ring2, ring2[1:] + ring2[:1]):
+                vs = [bf.verts.new(v) for v in ((x0, y0, base), (x1, y1, base), (x1, y1, top + 0.9), (x0, y0, top + 0.9))]
+                try:
+                    made.append(bf.faces.new(vs))
                 except ValueError:
                     pass
             try:
-                br.faces.new([br.verts.new((x, y, top)) for x, y in ring2])
+                made.append(bf.faces.new([bf.verts.new((x, y, top)) for x, y in ring2]))
             except ValueError:
                 pass
-            counts["greenhouses" if green else "buildings"] += 1
+            lw, lr, lb, lt = (bf.faces.layers.float_color["wall"], bf.faces.layers.float_color["roof"],
+                              bf.faces.layers.float["base"], bf.faces.layers.float["top"])
+            for fc in made:
+                fc[lw], fc[lr], fc[lb], fc[lt] = (*wall, 1.0), (*roofc, 1.0), base + 0.3, top
+            counts["buildings"] += 1
         elif kind == "road":
             if f.get("raised"):
                 lift = 0.15
@@ -444,6 +570,11 @@ def _area(ring) -> float:
     return 0.5 * sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(ring, ring[1:] + ring[:1]))
 
 
+def _scale(x, y, z):
+    from mathutils import Matrix
+    return Matrix.Diagonal((x, y, z, 1.0))
+
+
 def _translate(x, y, z):
     from mathutils import Matrix
     return Matrix.Translation((x, y, z))
@@ -460,6 +591,7 @@ def build(manifest: dict[str, Any], folder: Path, sea: float, keep: tuple[float,
     stones = 0
     feats = json.loads((folder / manifest["osm"]["file"]).read_text()) if "osm" in manifest else []
     counts = build_osm(feats, ground, wet, keep, sea)
+    counts["trees"] = plant_trees(ground, wet, keep, sea)
     return {"radius": r, "sea_share": round(float(wet.mean()), 2), **counts, "shore_stones": stones, "ground": ground}
 
 
