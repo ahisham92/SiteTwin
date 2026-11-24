@@ -127,6 +127,30 @@ $4–10; 720p drafts about a third of that. Each finished video shows its real G
 To deploy from a PC instead: `pip install modal`, `modal setup`, the `modal secret create` line from
 the workflow, then `modal deploy modal_app.py`.
 
+### A drone survey of the site
+
+On the project's **Location** tab, drop a drone video of the site (with its DJI `.SRT` file if the
+drone wrote one: it holds the GPS), drone photos, or a finished photogrammetry model (a `.zip` of
+an OBJ from OpenDroneMap, Pix4D, DJI Terra, Metashape..., or a `.glb`).
+
+1. A video or photos go through [OpenDroneMap](https://opendronemap.org) on a 16-core Modal machine
+   (`modal_survey.py`, its own Modal app, deployed with the renderer): sharp frames are picked out,
+   matched, and made into a textured 3D mesh. A few minutes of video take 20 to 60 minutes and about
+   a dollar, once.
+2. The model is levelled (with no GPS, from where the drone flew), centred, cut down to ~450k faces,
+   saved as one `.glb` with JPEG textures, and drawn from above (`plan.png`) - `survey.normalise`.
+3. With GPS it is placed by itself (UTM, with the grid's turn from true north). Without, its plan is
+   laid on the satellite map on the Location tab and moved, turned and sized by hand (east, north,
+   turn, width), saved with the project.
+4. In every film after that, near the works the survey replaces the modelled or Google surroundings
+   (they are cut away wherever the survey covers them), its heights matched to the ground round the
+   works, the works area itself cut out of it (and at sea, its water). See `sitetwin_worker/survey.py`.
+
+To check the drone step alone: **Actions -> Try the drone step** with a video's URL, or
+`modal run modal_survey.py::try_video --video flight.mp4`; locally, `python -m sitetwin_worker survey
+odm-result.zip --out ready/` and `python -m sitetwin_worker render model.ifc --survey ready/
+--survey-place '{"width": 250}'`.
+
 ### Making it more real, next
 
 - Google Photorealistic 3D Tiles for cities that have them (needs a Google Maps Platform key).

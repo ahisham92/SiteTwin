@@ -52,8 +52,16 @@ QUALITIES = ("preview", "draft", "final", "4k")
 #: Columns added after the first release, added to an older database when it is opened.
 LATER_COLUMNS = {
     "jobs": [("stage", "TEXT"), ("frames_done", "INTEGER"), ("frames_total", "INTEGER"),
-             ("gpus", "INTEGER"), ("updated", "REAL"), ("cost", "REAL"), ("preview", "TEXT")],
+             ("gpus", "INTEGER"), ("updated", "REAL"), ("cost", "REAL"), ("preview", "TEXT"),
+             ("kind", "TEXT")],             # 'film' (NULL in older rows) or 'survey'
+    # the project's drone survey: what was sent, how far it is (queued, running, ready, failed),
+    # what the worker said, survey.json once made, and where the person placed it
+    "projects": [("survey_name", "TEXT"), ("survey_state", "TEXT"), ("survey_message", "TEXT"),
+                 ("survey_info", "TEXT"), ("survey_place", "TEXT")],
 }
+#: What a survey's placement may hold, with its limits.
+PLACE_FIELDS = {"east": (-5000.0, 5000.0), "north": (-5000.0, 5000.0), "up": (-500.0, 500.0),
+                "turn": (-360.0, 360.0), "width": (0.0, 20000.0), "scale": (0.01, 100.0)}
 #: What a render goes through, in order, as the worker reports it.
 JOB_STAGES = ("queued", "starting", "surroundings", "scene", "frames", "joining", "uploading", "done")
 #: A job a worker took and has not reported on for this long is offered again.
@@ -96,6 +104,8 @@ class Store:
     def _row(row: sqlite3.Row) -> dict[str, Any]:
         out = dict(row)
         out["model_summary"] = json.loads(out["model_summary"]) if out["model_summary"] else None
+        for key in ("survey_info", "survey_place"):
+            out[key] = json.loads(out[key]) if out.get(key) else None
         return out
 
     def projects(self, owner: str) -> list[dict[str, Any]]:
@@ -167,12 +177,14 @@ class Store:
         if not 10 <= seconds <= 600:
             raise StoreError(400, "A film runs between 10 seconds and 10 minutes.")
         with self._db() as db:
-            busy = db.execute("SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','running')",
-                              (pid,)).fetchone()
+            busy = db.execute("SELECT id FROM jobs WHERE project_id=? AND status IN ('queued','running') "
+                              "AND COALESCE(kind,'film')='film'", (pid,)).fetchone()
             if busy:
                 raise StoreError(409, "A video of this project is already being made.")
-            cur = db.execute("INSERT INTO jobs (project_id, owner, quality, seconds, status, stage, created) "
-                             "VALUES (?,?,?,?,'queued','queued',?)", (pid, owner, quality, seconds, time.time()))
+            if project.get("survey_state") in ("queued", "running"):
+                raise StoreError(409, "The drone survey is still being made: the film waits for it.")
+            cur = db.execute("INSERT INTO jobs (project_id, owner, quality, seconds, status, stage, created, kind) "
+                             "VALUES (?,?,?,?,'queued','queued',?,'film')", (pid, owner, quality, seconds, time.time()))
             jid = cur.lastrowid
         return self.job(jid)
 
@@ -183,11 +195,66 @@ class Store:
             raise StoreError(404, "There is no such job.")
         return dict(row)
 
-    def jobs(self, owner: str, pid: int) -> list[dict[str, Any]]:
+    def jobs(self, owner: str, pid: int, kind: str = "film") -> list[dict[str, Any]]:
         with self._db() as db:
-            rows = db.execute("SELECT * FROM jobs WHERE project_id=? AND owner=? ORDER BY id DESC",
-                              (pid, owner)).fetchall()
+            rows = db.execute("SELECT * FROM jobs WHERE project_id=? AND owner=? AND COALESCE(kind,'film')=? "
+                              "ORDER BY id DESC", (pid, owner, kind)).fetchall()
         return [dict(r) for r in rows]
+
+    # ---- the drone survey -------------------------------------------------------------
+
+    def queue_survey(self, owner: str, pid: int, name: str) -> dict[str, Any]:
+        """A survey was sent (a video, photos or a finished model): the worker makes it ready."""
+        self.project(owner, pid)
+        with self._db() as db:
+            db.execute("UPDATE jobs SET status='failed', message='Replaced by a newer survey.', finished=? "
+                       "WHERE project_id=? AND kind='survey' AND status IN ('queued','running')", (time.time(), pid))
+            cur = db.execute("INSERT INTO jobs (project_id, owner, quality, seconds, status, stage, created, kind) "
+                             "VALUES (?,?,'survey',0,'queued','queued',?,'survey')", (pid, owner, time.time()))
+            jid = cur.lastrowid
+        self._update(pid, {"survey_name": name[:200], "survey_state": "queued", "survey_info": None,
+                           "survey_message": "Waiting for the cloud machine"})
+        return self.job(jid)
+
+    def survey_done(self, jid: int, info: dict[str, Any] | None, message: str = "") -> dict[str, Any]:
+        """The worker finished a survey job: ``info`` is its survey.json, or None if it failed."""
+        job = self.job(jid)
+        with self._db() as db:
+            db.execute("UPDATE jobs SET status=?, message=?, finished=?, updated=?, percent=?, stage=? WHERE id=?",
+                       ("done" if info else "failed", (message or "")[:1000], time.time(), time.time(),
+                        100.0 if info else 0.0, "done" if info else None, jid))
+        self._update(job["project_id"], {"survey_state": "ready" if info else "failed",
+                                         "survey_info": json.dumps(info) if info else None,
+                                         "survey_message": (message or "")[:1000]})
+        return self.job(jid)
+
+    def survey_progress(self, pid: int, message: str) -> None:
+        self._update(pid, {"survey_state": "running", "survey_message": (message or "")[:300]})
+
+    def set_survey_place(self, owner: str, pid: int, place: dict[str, Any]) -> dict[str, Any]:
+        self.project(owner, pid)
+        clean: dict[str, float] = {}
+        for key, (lo, hi) in PLACE_FIELDS.items():
+            v = place.get(key)
+            if v in (None, ""):
+                continue
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                raise StoreError(400, f"The survey's {key} must be a number.")
+            if not lo <= f <= hi:
+                raise StoreError(400, f"The survey's {key} must be between {lo:g} and {hi:g}.")
+            clean[key] = f
+        self._update(pid, {"survey_place": json.dumps(clean)})
+        return self.project(owner, pid)
+
+    def drop_survey(self, owner: str, pid: int) -> None:
+        self.project(owner, pid)
+        with self._db() as db:
+            db.execute("UPDATE jobs SET status='failed', message='Survey removed.', finished=? "
+                       "WHERE project_id=? AND kind='survey' AND status IN ('queued','running')", (time.time(), pid))
+        self._update(pid, {"survey_name": None, "survey_state": None, "survey_info": None,
+                           "survey_message": None, "survey_place": None})
 
     def claim(self, worker: str) -> dict[str, Any] | None:
         """The oldest waiting job (or one whose worker went quiet), now running for this worker."""

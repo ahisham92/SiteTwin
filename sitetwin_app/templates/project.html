@@ -103,6 +103,46 @@
       </form>
     </div>
   </div>
+
+  {% set sv = s['survey'] %}
+  <div class="card mt" data-survey-card data-place-url="{{ url_for('place_survey', pid=p['id']) }}"
+       data-delete-url="{{ url_for('delete_survey', pid=p['id']) }}">
+    <div class="card-head"><div><h2>Drone survey <span class="small muted">optional</span></h2>
+      <p class="small muted" style="margin-top:2px">A drone flight over the site, made into a 3D model of the real place. Near the works the film uses it in place of the map-made surroundings.</p></div>
+      <span class="small" data-survey-state></span></div>
+    <div class="card-body stack">
+      <div data-survey-busy class="{{ '' if sv and sv['state'] in ('queued', 'running') else 'hidden' }}">
+        <p><span class="pulse"></span><span data-survey-message>{{ sv['message'] if sv else '' }}</span></p>
+        <p class="small muted">The video is turned into a 3D model on a cloud machine (OpenDroneMap). That takes 20 to 60 minutes for a few minutes of flying, about a dollar, once. You can leave this page.</p>
+      </div>
+      <p class="state-warning small {{ '' if sv and sv['state'] == 'failed' else 'hidden' }}" data-survey-failed>▲ <span data-survey-why>{{ sv['message'] if sv else '' }}</span></p>
+      <form method="post" class="stack {{ '' if sv and sv['state'] == 'ready' else 'hidden' }}" action="{{ url_for('place_survey', pid=p['id']) }}" data-survey-place>
+        <p class="small muted" data-survey-hint>{% if sv and sv['state'] == 'ready' and not sv['metric'] %}The video had no GPS, so its position, size and direction are not known. Its plan is drawn on the map above: move and turn it until it sits on the satellite picture, and give its width.{% else %}Placed by the drone's GPS. Nudge it here if it is off.{% endif %}</p>
+        <div class="grid grid-3">
+          <label class="field"><span class="field-label">East (m)</span><input name="east" inputmode="decimal" value="{{ sv['place'].get('east', 0) if sv else 0 }}"></label>
+          <label class="field"><span class="field-label">North (m)</span><input name="north" inputmode="decimal" value="{{ sv['place'].get('north', 0) if sv else 0 }}"></label>
+          <label class="field"><span class="field-label">Turn (° clockwise)</span><input name="turn" inputmode="decimal" value="{{ sv['place'].get('turn', 0) if sv else 0 }}"></label>
+          <label class="field {{ 'hidden' if sv and sv['metric'] else '' }}" data-survey-width><span class="field-label">Width across (m)</span><input name="width" inputmode="decimal" value="{{ sv['place'].get('width', '') if sv else '' }}" placeholder="e.g. 250"></label>
+          <label class="field"><span class="field-label">Raise (m)</span><input name="up" inputmode="decimal" value="{{ sv['place'].get('up', 0) if sv else 0 }}"><span class="field-hint">Heights are matched to the ground round the works by themselves.</span></label>
+        </div>
+        <div class="row"><button class="btn btn-primary">Save the placement</button><span class="saved-note" data-survey-saved></span>
+          <button type="button" class="btn btn-ghost btn-sm" data-survey-remove>Remove the survey</button></div>
+      </form>
+      <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_survey', pid=p['id']) }}" data-survey-upload>
+        <label class="drop slim">
+          <input type="file" name="survey" multiple accept=".mp4,.mov,.avi,.mkv,.m4v,.ts,.srt,.jpg,.jpeg,.tif,.tiff,.png,.dng,.zip,.glb">
+          <span class="drop-icon" aria-hidden="true">⬆</span>
+          <span><span class="drop-title">{{ 'Replace the survey' if sv else 'Drop the drone video here, or click to choose it' }}</span><br>
+          <span class="small muted">A video (.mp4, .mov), with its .SRT file if the drone made one (it holds the GPS); or drone photos; or a finished model (.zip of an OBJ, or .glb). Up to 500 MB.{% if sv %} Now: {{ sv['name'] }}.{% endif %}</span></span>
+        </label>
+        <noscript><button class="btn btn-primary mt-sm">Upload</button></noscript>
+        <div class="hidden" data-survey-sending>
+          <div class="row between small"><span data-survey-word>Uploading</span><span class="tabular" data-survey-num></span></div>
+          <div class="bar mt-sm"><div class="bar-fill" data-survey-bar style="width:0"></div></div>
+        </div>
+      </form>
+    </div>
+  </div>
 </section>
 
 {# ---- 3. Sequence ----------------------------------------------------- #}

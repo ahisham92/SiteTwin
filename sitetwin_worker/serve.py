@@ -143,6 +143,9 @@ def handle(site: Site, got: dict[str, Any], workdir: Path, log=print) -> None:
     job = got["job"]
     jid = job["id"]
     project = got["project"]
+    if job.get("kind") == "survey":
+        handle_survey(site, got, workdir, log)
+        return
     log(f"Job {jid}: {project['name']} ({job['quality']}, {job['seconds']:.0f} s)")
     folder = workdir / f"project_{project['id']}"
     folder.mkdir(parents=True, exist_ok=True)
@@ -155,9 +158,10 @@ def handle(site: Site, got: dict[str, Any], workdir: Path, log=print) -> None:
 
     try:
         site.download(mount_prefix(site.base) + got["model_url"], ifc)
+        survey = fetch_survey(site, got, folder / f"job_{jid}")
         result = run(ifc, folder / f"job_{jid}", project["latitude"], project["longitude"],
                      seconds=job["seconds"], quality=job["quality"], title=project["name"], log=log,
-                     on_stage=rep.stage, on_frame=frame)
+                     on_stage=rep.stage, on_frame=frame, survey=survey, survey_place=got.get("survey_place"))
         rep.stage("uploading")
         missing = result["manifest"].get("missing", {})
         note = ("Without " + ", ".join(missing) + " (could not be fetched).") if missing else ""
@@ -171,6 +175,60 @@ def handle(site: Site, got: dict[str, Any], workdir: Path, log=print) -> None:
             site.json("POST", f"/api/worker/jobs/{jid}/failed", {"message": f"{type(exc).__name__}: {exc}"[:900]})
         except urllib.error.URLError:
             pass
+
+
+def fetch_survey(site: Site, got: dict[str, Any], folder: Path) -> Path | None:
+    """The project's drone survey for a film, unpacked into ``folder/survey``; None if it has none."""
+    if not got.get("survey_url"):
+        return None
+    import zipfile
+    folder.mkdir(parents=True, exist_ok=True)
+    z = folder / "survey.zip"
+    site.download(mount_prefix(site.base) + got["survey_url"], z)
+    with zipfile.ZipFile(z) as zz:
+        zz.extractall(folder / "survey")
+    z.unlink()
+    return folder / "survey"
+
+
+def fetch_sources(site: Site, got: dict[str, Any], folder: Path) -> list[Path]:
+    """What the person sent for a survey job."""
+    from urllib.parse import unquote
+    folder.mkdir(parents=True, exist_ok=True)
+    out = []
+    for url in got.get("sources", []):
+        path = folder / Path(unquote(url.rsplit("/", 1)[-1])).name
+        site.download(mount_prefix(site.base) + url, path)
+        out.append(path)
+    return out
+
+
+def handle_survey(site: Site, got: dict[str, Any], workdir: Path, log=print, odm=None) -> None:
+    """Make a project's drone survey ready (see survey.make_ready) and send it to the site."""
+    import shutil
+
+    from .survey import make_ready
+    jid = got["job"]["id"]
+    folder = workdir / f"survey_{jid}"
+    rep = Reporter(site, jid)
+    try:
+        rep.send(3, "Fetching what was sent")
+        sources = fetch_sources(site, got, folder / "in")
+        log(f"Survey job {jid}: {', '.join(p.name for p in sources)}")
+        made = make_ready(sources, folder, log=log, odm=odm, on_stage=lambda w: rep.send(50, w))
+        rep.send(98, "Sending the 3D model to the site")
+        site.upload(f"/api/worker/jobs/{jid}/survey", "survey", made, ctype="application/zip")
+        log(f"Survey job {jid} delivered")
+    except Stopped:
+        log(f"Survey job {jid} was stopped on the site")
+    except Exception as exc:                              # noqa: BLE001 - reported to the site
+        traceback.print_exc()
+        try:
+            site.json("POST", f"/api/worker/jobs/{jid}/failed", {"message": f"{type(exc).__name__}: {exc}"[:900]})
+        except urllib.error.URLError:
+            pass
+    finally:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def serve(base: str, token: str | None = None, workdir: Path | None = None, every: float = 20.0,

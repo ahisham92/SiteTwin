@@ -1558,6 +1558,11 @@ def build(elements: list[Element], tl: Timeline, env_folder: Path, manifest: dic
     else:
         build_terrain(g, manifest, env_folder)
         build_neighbours(g, manifest, env_folder, keep_out)
+    if manifest.get("survey"):
+        # the drone survey in place of the surroundings it covers
+        from . import survey as SV
+        env_objs = [o for o in bpy.data.objects if o not in before and o not in site_objs]
+        SV.add_to_scene(manifest, keep_out, env_objs)
     # the floor each step's crew stands on
     for st in tl.steps:
         st.floor = -pit_depth + 0.02 if st.phase == "Foundations" else _floor_of(st, elements)

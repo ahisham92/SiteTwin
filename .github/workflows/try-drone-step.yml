@@ -1,0 +1,55 @@
+name: Try the drone step
+
+# Runs OpenDroneMap on Modal on a drone video given by URL, and pushes what it made (the plan
+# picture and the step's notes) to the `diagnostics` branch: a quick check that the drone step
+# works, without the website. Needs MODAL_TOKEN_ID and MODAL_TOKEN_SECRET.
+
+on:
+  workflow_dispatch:
+    inputs:
+      video:
+        description: "URL of a drone video (.mp4 / .mov)"
+        required: true
+      srt:
+        description: "URL of its .SRT GPS track (optional)"
+        default: ""
+      frames:
+        description: "Most frames to take from the video"
+        default: "200"
+
+jobs:
+  try:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+      MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install "modal>=1.0" "bpy==5.2.3" numpy pillow
+      - name: Fetch the video
+        env:
+          VIDEO: ${{ inputs.video }}
+          SRT: ${{ inputs.srt }}
+        run: |
+          mkdir -p in
+          curl -fsSL "$VIDEO" -o "in/flight.${VIDEO##*.}"
+          if [ -n "$SRT" ]; then curl -fsSL "$SRT" -o in/flight.srt; fi
+          ls -la in
+      - name: OpenDroneMap on Modal
+        run: |
+          srt=""; [ -f in/flight.srt ] && srt="--srt in/flight.srt"
+          video=$(ls in/flight.* | grep -v '\.srt$' | head -1)
+          modal run modal_survey.py::try_video --video "$video" $srt --frames ${{ inputs.frames }} --out odm.zip
+      - name: Level it and draw its plan (Blender)
+        run: python -m sitetwin_worker survey odm.zip --out ready
+      - name: Push the plan to the diagnostics branch
+        run: |
+          git config user.name "sitetwin-bot"; git config user.email "sitetwin-bot@users.noreply.github.com"
+          git fetch origin diagnostics && git checkout diagnostics || git checkout --orphan diagnostics
+          mkdir -p drone-step && cp ready/plan.png ready/survey.json drone-step/
+          git add drone-step && git commit -m "Drone step: plan of the test flight" && git push origin diagnostics

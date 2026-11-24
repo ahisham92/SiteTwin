@@ -78,7 +78,8 @@ def render_chunk(job_dir: str, args: dict, first: int, last: int, jid: int = 0) 
 
     res = run(folder / "model.ifc", folder, args["lat"], args["lon"], seconds=args["seconds"],
               quality=args["quality"], title=args["title"], chunk=(first, last), on_frame=frame,
-              fly_in=args.get("fly_in", True))
+              fly_in=args.get("fly_in", True), survey=Path(args["survey"]) if args.get("survey") else None,
+              survey_place=args.get("survey_place"))
     work.commit()
     return {"segment": res["segment"], "seconds": time.time() - t, "first": first}
 
@@ -89,7 +90,7 @@ def handle_job(got: dict) -> None:
     import traceback
 
     from sitetwin_worker.render import chunks, join, run
-    from sitetwin_worker.serve import Reporter, Stopped, mount_prefix
+    from sitetwin_worker.serve import Reporter, Stopped, fetch_survey, mount_prefix
 
     site = _site()
     job, project = got["job"], got["project"]
@@ -102,10 +103,13 @@ def handle_job(got: dict) -> None:
     try:
         rep.stage("starting")
         site.download(mount_prefix(site.base) + got["model_url"], folder / "model.ifc")
+        survey = fetch_survey(site, got, folder)
         args = {"lat": project["latitude"], "lon": project["longitude"], "seconds": job["seconds"],
-                "quality": job["quality"], "title": project["name"]}
+                "quality": job["quality"], "title": project["name"],
+                "survey": str(survey) if survey else None, "survey_place": got.get("survey_place") or {}}
         prep = run(folder / "model.ifc", folder, args["lat"], args["lon"], seconds=args["seconds"],
-                   quality=args["quality"], title=args["title"], prepare_only=True, on_stage=rep.stage)
+                   quality=args["quality"], title=args["title"], prepare_only=True, on_stage=rep.stage,
+                   survey=survey, survey_place=args["survey_place"])
         work.commit()
         runs = chunks(prep["frames"], prep["fps"], MAX_GPUS)
         total = prep["frames"]
@@ -138,6 +142,8 @@ def handle_job(got: dict) -> None:
         note = f"{gpu_seconds / 3600:.1f} GPU-hours on {GPU}, about ${cost:.2f}."
         if prep["manifest"].get("google"):
             note += " Surroundings: Google photo-real 3D."
+        if prep["manifest"].get("survey"):
+            note += " With the drone survey near the site."
         if missing:
             note += " Without " + ", ".join(missing) + " (could not be fetched)."
         rep.send(99, "Sending the film to the site", stage="uploading", cost=cost)
@@ -196,6 +202,54 @@ def sample_film(ifc: bytes, lat: float, lon: float, seconds: float, quality: str
         work.commit()
 
 
+@app.function(image=render_image, volumes={"/work": work}, timeout=10 * 3600, secrets=[secret])
+def handle_survey(got: dict) -> None:
+    """A project's drone survey: what was sent goes through OpenDroneMap (the ``sitetwin-survey``
+    app, modal_survey.py) when it is a video or photos, then is levelled, compressed and drawn
+    from above here (Blender), and sent to the site."""
+    import shutil
+
+    from sitetwin_worker.serve import Reporter, handle_survey as handle
+
+    jid = got["job"]["id"]
+    rep = Reporter(_site(), jid)
+
+    def odm(sources: list, w: Path) -> Path:
+        stages = modal.Dict.from_name("sitetwin-survey-stage", create_if_missing=True)
+        shared = Path(f"/work/survey_job_{jid}")
+        shutil.rmtree(shared, ignore_errors=True)
+        (shared / "in").mkdir(parents=True)
+        for p in sources:
+            shutil.copy(p, shared / "in" / Path(p).name)
+        work.commit()
+        try:
+            fn = modal.Function.from_name("sitetwin-survey", "odm")
+        except Exception as exc:                           # noqa: BLE001 - said plainly on the page
+            raise RuntimeError("The drone step is not deployed on Modal (modal deploy modal_survey.py).") from exc
+        key = f"{jid}"
+        call = fn.spawn(str(shared), key)
+        started = time.time()
+        while True:
+            try:
+                call.get(timeout=60)
+                break
+            except (TimeoutError, modal.exception.TimeoutError):
+                words = stages.get(key, "Starting OpenDroneMap")
+                rep.send(10, f"{words} ({(time.time() - started) / 60:.0f} min so far)")
+        try:
+            stages.pop(key)
+        except Exception:                                  # noqa: BLE001
+            pass
+        work.reload()
+        made = w / "odm-survey.zip"
+        shutil.copy(shared / "odm" / "survey.zip", made)
+        shutil.rmtree(shared, ignore_errors=True)
+        work.commit()
+        return made
+
+    handle(_site(), got, Path("/work/surveys"), odm=odm)
+
+
 @app.local_entrypoint()
 def sample(ifc: str = "samples/sample-building.ifc", lat: float = 33.66, lon: float = 35.42,
            seconds: float = 60, quality: str = "draft", title: str = "SiteTwin sample", out: str = "film.mp4",
@@ -216,7 +270,7 @@ def dispatch() -> int:
     n = 0
     try:
         while (got := claim(site)) is not None:
-            handle_job.spawn(got)
+            (handle_survey if got["job"].get("kind") == "survey" else handle_job).spawn(got)
             n += 1
     except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
         # the website was briefly unreachable (PythonAnywhere answers 502 now and then): this runs

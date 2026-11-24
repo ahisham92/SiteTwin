@@ -71,5 +71,9 @@ jobs:
           if [ -n "$SKETCHFAB_TOKEN" ]; then echo "Sketchfab models: token found"; set -- "$@" SITETWIN_SKETCHFAB_TOKEN="$SKETCHFAB_TOKEN"
           else echo "::notice::No SITETWIN_SKETCHFAB_TOKEN: plant and crews use the built-in models"; fi
           modal secret create sitetwin "$@" --force
+      - name: Deploy the drone step (OpenDroneMap)
+        # its own Modal app: if it fails to build, films still deploy and render
+        continue-on-error: true
+        run: modal deploy modal_survey.py
       - name: Deploy
         run: modal deploy modal_app.py
