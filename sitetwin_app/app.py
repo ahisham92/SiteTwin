@@ -17,7 +17,7 @@ from typing import Any
 
 from flask import Flask, abort, jsonify, redirect, render_template, request, send_file, url_for
 
-from . import ifc
+from . import __version__, ifc
 from .store import Store, StoreError
 
 #: Where a mounting site says who is asking: {"id", "name", "login"}.
@@ -110,7 +110,7 @@ def create_app(store: Store | None = None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = MAX_MODEL_MB * 1024 * 1024
     app.store = store or Store()
-    app.jinja_env.globals.update(tile_url=tile_url, QUALITY_CHOICES=QUALITY_CHOICES)
+    app.jinja_env.globals.update(tile_url=tile_url, QUALITY_CHOICES=QUALITY_CHOICES, VERSION=__version__)
 
     def wants_json() -> bool:
         return request.path.startswith("/api/") or request.accept_mimetypes.best == "application/json" \

@@ -35,6 +35,19 @@ runs as a separate **render worker** that picks up jobs and posts the finished v
                        └──── video ─────────└─ Render (Unreal Engine 5 / Blender Cycles)
 ```
 
+**The screens** use **CDT.Web** (`sitetwin_app/static/cdt/`): the look and controls of the
+Dar [CDT.SDK](https://github.com/Dar-Structural-Computational-Design/CDT-SDK) (`CDT.Wpf`) carried
+to the browser. `cdt.css` holds the SDK's design tokens in its four palettes (Dar / CDT brand ×
+light / dark, values copied from `CDT.Wpf/Themes/Palette.*.xaml`) and its style catalogue under
+the same names (primary / soft / muted / ghost / icon buttons, split and drop-down buttons,
+segmented control, search and form fields, NumberBox, PathBox, filter chips, outcome labels,
+status dots, progress and utilization bars, InfoBar, EmptyState, StepIndicator, DataGrid,
+DialogHost, menus, tooltips, InfoTip, Kbd, app bar with the Dar logo and version label).
+`cdt.js` adds their behaviour: theme and brand switching, toasts, in-page dialogs in place of
+`window.confirm`, NumberBox arithmetic and spin keys, sortable grids, menus and FocusAssist.
+The glyphs are an inline SVG sprite (`templates/_icons.html`). When the SDK palette changes,
+copy the new values into `cdt.css`.
+
 **Making it real** (the original plan; see "The render worker" for what is built):
 
 - **Geometry:** IfcOpenShell converts IFC to glTF with Revit materials kept; `IfcMapConversion`

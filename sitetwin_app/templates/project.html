@@ -1,78 +1,107 @@
 {% extends "base.html" %}
-{% from "_bits.html" import stage_word %}
+{% from "_bits.html" import stage_word, outcome %}
 {% block title %}{{ p['name'] }} · SiteTwin{% endblock %}
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', filename='vendor/leaflet/leaflet.css') }}">
 <script type="importmap">{"imports": {"three": "{{ url_for('static', filename='vendor/three/three.module.min.js') }}"}}</script>
 {% endblock %}
+{% block crumbs %}
+<nav class="crumbs" aria-label="Where you are">
+  <a class="cdt-navitem" href="{{ url_for('home') }}"><svg class="cdt-ico"><use href="#i-grid"/></svg>Projects</a>
+  <svg class="cdt-ico crumb-sep" aria-hidden="true"><use href="#i-chevron-right"/></svg>
+  <span class="cdt-navitem active" data-crumb-name>{{ p['name'] }}</span>
+</nav>
+{% endblock %}
 {% block content %}
 {% set m = p['model_summary'] %}
 {% set job = s['job'] %}
 {% set done = s['done'] %}
+{% set staged = m and m['sequence'] and m['sequence'][0].get('stage') %}
 <div class="page-head">
-  <div>
-    <p class="small crumb"><a href="{{ url_for('home') }}">SiteTwin</a> /</p>
-    <h1 data-name>{{ p['name'] }}</h1>
-    <p class="small muted page-meta" data-meta>
-      {% if p['model_name'] %}<span>{{ p['model_name'] }}</span>{% endif %}
-      {% if m %}<span>{{ m['counts'].values()|sum }} elements</span><span>{{ m['storeys']|length }} storeys</span>{% endif %}
-      {% if p['latitude'] is not none %}<span>{{ '%.5f, %.5f'|format(p['latitude'], p['longitude']) }}</span>{% endif %}
-      {% if not p['model_name'] %}<span>Start by uploading the model</span>{% endif %}
+  <div class="page-title">
+    <p class="cdt-section-label">{{ 'Marine works' if m and m.get('setting') == 'marine' else 'Project' }}</p>
+    <div class="title-row">
+      <h1 class="cdt-hero" data-name>{{ p['name'] }}</h1>
+      <button type="button" class="cdt-btn icon sm" data-rename data-tip="Rename" aria-label="Rename the project"><svg class="cdt-ico"><use href="#i-edit"/></svg></button>
+    </div>
+    <p class="page-meta" data-meta>
+      {% if p['model_name'] %}<span class="cdt-badge"><svg class="cdt-ico"><use href="#i-cube"/></svg>{{ p['model_name'] }}</span>{% endif %}
+      {% if m %}<span class="cdt-badge">{{ '{:,}'.format(m['counts'].values()|sum) }} elements</span>
+        <span class="cdt-badge">{{ m['storeys']|length }} storey{{ '' if m['storeys']|length == 1 else 's' }}</span>{% endif %}
+      {% if p['latitude'] is not none %}<span class="cdt-badge"><svg class="cdt-ico"><use href="#i-pin"/></svg>{{ '%.5f, %.5f'|format(p['latitude'], p['longitude']) }}</span>{% endif %}
+      {% if not p['model_name'] %}<span class="cdt-muted">Start by uploading the model</span>{% endif %}
     </p>
   </div>
-  <div class="row">
-    <button type="button" class="btn btn-primary" data-next-action></button>
+  <div class="cdt-split head-actions">
+    <button type="button" class="cdt-btn primary" data-next-action></button>
+    <div class="cdt-dropdown">
+      <button type="button" class="cdt-btn primary" data-cdt-dropdown aria-expanded="false" aria-haspopup="menu" aria-label="More actions"><svg class="cdt-ico"><use href="#i-chevron-down"/></svg></button>
+      <div class="cdt-menu" role="menu" hidden>
+        <button type="button" class="cdt-menurow" role="menuitem" data-rename><svg class="cdt-ico"><use href="#i-edit"/></svg>Rename</button>
+        {% if p['model_name'] %}<a class="cdt-menurow" role="menuitem" href="{{ url_for('model_file', pid=p['id']) }}" download><svg class="cdt-ico"><use href="#i-download"/></svg>Download the IFC</a>{% endif %}
+        <a class="cdt-menurow" role="menuitem" href="#model"><svg class="cdt-ico"><use href="#i-upload"/></svg>Replace the model</a>
+        <div class="cdt-menu-sep"></div>
+        <button type="submit" form="delete-form" class="cdt-menurow danger" role="menuitem"><svg class="cdt-ico"><use href="#i-trash"/></svg>Delete the project</button>
+      </div>
+    </div>
   </div>
 </div>
 
-<ol class="steps" role="tablist" aria-label="Stages">
-  {% for key, name, what in stages %}
-  <li class="step {{ states[key] }}" data-step="{{ key }}">
-    <button type="button" role="tab" aria-controls="pane-{{ key }}" title="{{ what }}">
-      <span class="step-mark">{{ '✓' if states[key] == 'done' else loop.index }}</span>
-      <span class="step-name">{{ name }}</span>
-      <span class="step-state" data-step-state>{{ stage_word(key, states[key], p, job) }}</span>
-    </button>
-  </li>
-  {% endfor %}
-</ol>
+<div class="cdt-card stepper-card">
+  <ol class="cdt-steps steps" role="tablist" aria-label="Stages">
+    {% for key, name, what in stages %}
+    <li class="step {{ states[key] }}" data-step="{{ key }}">
+      <button type="button" role="tab" aria-controls="pane-{{ key }}" title="{{ what }}">
+        <span class="step-mark">{{ '✓' if states[key] == 'done' else loop.index }}</span>
+        <span class="step-name">{{ 'Stages' if key == 'sequence' and staged else ('Film' if key == 'video' else name) }}</span>
+        <span class="step-state" data-step-state>{{ stage_word(key, states[key], p, job) }}</span>
+      </button>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
 
 {# ---- 1. Model -------------------------------------------------------- #}
 <section class="pane" id="pane-model" data-pane="model">
-  <div class="card">
-    <div class="card-head"><div><h2>The model</h2>
-      <p class="small muted" style="margin-top:2px">The IFC exported from Revit. Its elements, storeys and survey point are read as soon as it is uploaded.</p></div></div>
-    <div class="card-body stack">
+  <div class="cdt-card">
+    <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-cube"/></svg></span><div>
+      <h2 class="cdt-title">The model</h2>
+      <p class="cdt-muted">The IFC exported from Revit. Its elements, storeys and survey point are read as soon as it is uploaded.</p></div></div></div>
+    <div class="cdt-card-body stack">
       {% if m %}
+      {% set total = m['counts'].values()|sum %}
       <div class="grid grid-4">
-        <div class="tile"><p class="tile-label">Elements</p><p class="tile-value">{{ m['counts'].values()|sum }}</p><p class="tile-foot"><span class="muted">{{ m['counts']|length }} kinds</span></p></div>
-        <div class="tile"><p class="tile-label">Storeys</p><p class="tile-value">{{ m['storeys']|length }}</p><p class="tile-foot"><span class="muted">{% if m['storeys'] %}{{ m['storeys'][0]['name'] }} to {{ m['storeys'][-1]['name'] }}{% endif %}</span></p></div>
-        <div class="tile"><p class="tile-label">Build steps</p><p class="tile-value">{{ m['sequence']|length }}</p><p class="tile-foot"><span class="muted">drafted from the model</span></p></div>
-        <div class="tile"><p class="tile-label">Location in the model</p><p class="tile-value">{{ 'Yes' if m['latitude'] is not none else 'No' }}</p>
-          <p class="tile-foot">{% if m['latitude'] is not none %}<span class="state-good">● read from the survey point</span>{% else %}<span class="state-warning">▲ place it on the map</span>{% endif %}</p></div>
+        <div class="cdt-innercard tile"><p class="cdt-stat-label">Elements</p><p class="cdt-stat-number">{{ '{:,}'.format(total) }}</p><p class="cdt-small cdt-muted">{{ m['counts']|length }} kinds</p></div>
+        <div class="cdt-innercard tile"><p class="cdt-stat-label">Storeys</p><p class="cdt-stat-number">{{ m['storeys']|length }}</p><p class="cdt-small cdt-muted">{% if m['storeys'] %}{{ m['storeys'][0]['name'] }}{% if m['storeys']|length > 1 %} to {{ m['storeys'][-1]['name'] }}{% endif %}{% endif %}</p></div>
+        <div class="cdt-innercard tile"><p class="cdt-stat-label">{{ 'Planned stages' if staged else 'Build steps' }}</p><p class="cdt-stat-number">{{ m['sequence']|length }}</p><p class="cdt-small cdt-muted">{{ 'carried in the model' if staged else 'drafted from the model' }}</p></div>
+        <div class="cdt-innercard tile"><p class="cdt-stat-label">Location in the model</p><p class="cdt-stat-number">{{ 'Yes' if m['latitude'] is not none else 'No' }}</p>
+          <p class="cdt-small">{% if m['latitude'] is not none %}<span class="state-good"><span class="cdt-dot ok"></span> read from the survey point</span>{% else %}<span class="state-warning"><span class="cdt-dot warn"></span> place it on the map</span>{% endif %}</p></div>
       </div>
       <div class="grid grid-2">
-        <div class="table-scroll"><table>
-          <thead><tr><th>Element</th><th class="right">Count</th></tr></thead>
-          <tbody>{% for kind, n in m['counts'].items() %}<tr><td>{{ kind[3:]|title }}</td><td class="right tabular">{{ n }}</td></tr>{% endfor %}</tbody>
+        <div class="cdt-grid-wrap"><table class="cdt-grid">
+          <thead><tr><th data-sort="text">Element</th><th data-sort="num" class="num" aria-sort="descending">Count</th><th class="share-col">Share of the model</th></tr></thead>
+          <tbody>{% for kind, n in m['counts']|dictsort(by='value', reverse=true) %}<tr><td>{{ kind[3:]|title|replace('Buildingelementproxy', 'Other (proxy)') }}</td><td class="num" data-v="{{ n }}">{{ '{:,}'.format(n) }}</td>
+            <td><span class="cdt-util"><span class="track"><span style="width:{{ (n / total * 100)|round(1) }}%"></span></span><span class="cdt-small cdt-muted cdt-tabular">{{ (n / total * 100)|round|int }}%</span></span></td></tr>{% endfor %}</tbody>
+          <tfoot><tr><td>All</td><td class="num">{{ '{:,}'.format(total) }}</td><td></td></tr></tfoot>
         </table></div>
-        <div class="table-scroll"><table>
-          <thead><tr><th>Storey</th><th class="right">Level (m)</th><th class="right">Elements</th></tr></thead>
-          <tbody>{% for st in m['storeys'] %}<tr><td>{{ st['name'] }}</td><td class="right tabular">{{ '%.2f'|format(st['elevation']) }}</td><td class="right tabular">{{ st['elements'] }}</td></tr>{% endfor %}</tbody>
+        <div class="cdt-grid-wrap"><table class="cdt-grid">
+          <thead><tr><th data-sort="text">Storey</th><th data-sort="num" class="num">Level (m)</th><th data-sort="num" class="num">Elements</th></tr></thead>
+          <tbody>{% for st in m['storeys'] %}<tr><td>{{ st['name'] }}</td><td class="num" data-v="{{ st['elevation'] }}">{{ '%.2f'|format(st['elevation']) }}</td><td class="num" data-v="{{ st['elements'] }}">{{ '{:,}'.format(st['elements']) }}</td></tr>{% endfor %}</tbody>
         </table></div>
       </div>
       {% endif %}
       <form class="upload" method="post" enctype="multipart/form-data" action="{{ url_for('upload_model', pid=p['id']) }}">
-        <label class="drop{{ ' slim' if m else '' }}">
+        <label class="drop cdt-pathbox{{ '' if m else ' big' }}">
           <input type="file" name="model" accept=".ifc,.gz" required>
-          <span class="drop-icon" aria-hidden="true">⬆</span>
-          <span><span class="drop-title">{{ 'Replace the model' if m else 'Drop the IFC file here, or click to choose it' }}</span><br>
-          <span class="small muted">In Revit: File › Export › IFC. Up to 500 MB.{% if m %} The current one is {{ p['model_name'] }}.{% endif %}</span></span>
+          <span class="glyph" aria-hidden="true"><svg class="cdt-ico xl"><use href="#i-upload"/></svg></span>
+          <span class="what"><b>{{ 'Replace the model' if m else 'Drop the IFC file here, or click to choose it' }}</b>
+          <span class="cdt-small cdt-muted">In Revit: File › Export › IFC. Up to 500 MB.{% if m %} The current one is {{ p['model_name'] }}.{% endif %}</span></span>
+          <span class="cdt-btn browse" aria-hidden="true">Browse…</span>
         </label>
-        <noscript><button class="btn btn-primary mt-sm">Upload</button></noscript>
+        <noscript><button class="cdt-btn primary mt-sm">Upload</button></noscript>
         <div class="upload-state hidden">
-          <div class="row between small"><span data-upload-word>Uploading</span><span class="tabular" data-upload-num></span></div>
-          <div class="bar mt-sm"><div class="bar-fill" data-upload-bar style="width:0"></div></div>
+          <div class="row between cdt-small"><span data-upload-word>Uploading</span><span class="cdt-tabular" data-upload-num></span></div>
+          <div class="cdt-progress mt-sm"><span class="bar-fill" data-upload-bar style="width:0"></span></div>
         </div>
       </form>
     </div>
@@ -81,64 +110,71 @@
 
 {# ---- 2. Location ----------------------------------------------------- #}
 <section class="pane" id="pane-location" data-pane="location">
-  <div class="card">
-    <div class="card-head"><div><h2>Where it stands</h2>
-      <p class="small muted" style="margin-top:2px">Click the map or drag the pin to the middle of the site. The circle is the area rebuilt around it: terrain, buildings, roads, trees and water.</p></div>
-      <span class="small muted" data-where-from>{% if p['location_from'] == 'ifc' %}From the model{% elif p['location_from'] == 'typed' %}Placed by you{% endif %}</span></div>
-    <div class="card-body split">
+  <div class="cdt-card">
+    <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-pin"/></svg></span><div>
+      <h2 class="cdt-title">Where it stands</h2>
+      <p class="cdt-muted">Click the map or drag the pin to the middle of the site. The circle is the area rebuilt around it: terrain, buildings, roads, trees and water.</p></div></div>
+      <span class="cdt-badge where-from" data-where-from>{% if p['location_from'] == 'ifc' %}From the model{% elif p['location_from'] == 'typed' %}Placed by you{% else %}Not placed yet{% endif %}</span></div>
+    <div class="cdt-card-body split">
       <div class="map" data-map='{{ {"lat": p["latitude"], "lon": p["longitude"]}|tojson }}'></div>
       <form class="map-side" method="post" action="{{ url_for('set_location', pid=p['id']) }}" data-location>
-        <label class="field" style="position:relative"><span class="field-label">Find a place</span>
-          <input type="search" placeholder="A town, a street, a landmark" data-search autocomplete="off">
-          <ul class="place-results hidden" data-results></ul></label>
+        <label class="cdt-field" style="position:relative"><span class="cdt-field-label">Find a place</span>
+          <span class="cdt-search"><svg class="cdt-ico"><use href="#i-search"/></svg>
+          <input class="cdt-input" type="search" placeholder="A town, a street, a landmark" data-search autocomplete="off"></span>
+          <ul class="place-results cdt-menu hidden" data-results></ul></label>
         <div class="grid grid-2">
-          <label class="field"><span class="field-label">Latitude</span><input name="latitude" inputmode="decimal" required value="{{ p['latitude'] if p['latitude'] is not none else '' }}"></label>
-          <label class="field"><span class="field-label">Longitude</span><input name="longitude" inputmode="decimal" required value="{{ p['longitude'] if p['longitude'] is not none else '' }}"></label>
+          <label class="cdt-field"><span class="cdt-field-label">Latitude</span><input class="cdt-input" name="latitude" inputmode="decimal" required data-cdt-number data-unit="°" data-step="0.0001" data-min="-90" data-max="90" value="{{ p['latitude'] if p['latitude'] is not none else '' }}"></label>
+          <label class="cdt-field"><span class="cdt-field-label">Longitude</span><input class="cdt-input" name="longitude" inputmode="decimal" required data-cdt-number data-unit="°" data-step="0.0001" data-min="-180" data-max="180" value="{{ p['longitude'] if p['longitude'] is not none else '' }}"></label>
         </div>
-        <label class="field"><span class="field-label">Ground level (m above sea), optional</span>
-          <input name="elevation" inputmode="decimal" value="{{ p['elevation'] if p['elevation'] is not none else '' }}">
-          <span class="field-hint">Left empty, it is read from the terrain.</span></label>
-        <div class="row"><button class="btn btn-primary">Save the location</button><span class="saved-note" data-saved></span></div>
-        <p class="small muted">Saved by itself when you move the pin.</p>
+        <label class="cdt-field"><span class="cdt-field-label">Ground level above sea <span class="cdt-muted">optional</span></span>
+          <input class="cdt-input" name="elevation" inputmode="decimal" data-cdt-number data-unit="m" data-step="0.5" value="{{ p['elevation'] if p['elevation'] is not none else '' }}">
+          <span class="cdt-field-hint">Left empty, it is read from the terrain.</span></label>
+        <div class="row"><button class="cdt-btn primary"><svg class="cdt-ico"><use href="#i-check"/></svg>Save the location</button><span class="saved-note" data-saved></span></div>
+        <div class="cdt-infobar"><svg class="cdt-ico"><use href="#i-info"/></svg><div class="ib-text cdt-small">Saved by itself when you move the pin. Arrow keys and the wheel nudge a number; you can type sums such as <span class="cdt-kbd">33.6+0.0005</span>.</div><span></span></div>
       </form>
     </div>
   </div>
 
   {% set sv = s['survey'] %}
-  <div class="card mt" data-survey-card data-place-url="{{ url_for('place_survey', pid=p['id']) }}"
+  <div class="cdt-card mt" data-survey-card data-place-url="{{ url_for('place_survey', pid=p['id']) }}"
        data-delete-url="{{ url_for('delete_survey', pid=p['id']) }}">
-    <div class="card-head"><div><h2>Drone survey <span class="small muted">optional</span></h2>
-      <p class="small muted" style="margin-top:2px">A drone flight over the site, made into a 3D model of the real place. Near the works the film uses it in place of the map-made surroundings.</p></div>
-      <span class="small" data-survey-state></span></div>
-    <div class="card-body stack">
-      <div data-survey-busy class="{{ '' if sv and sv['state'] in ('queued', 'running') else 'hidden' }}">
-        <p><span class="pulse"></span><span data-survey-message>{{ sv['message'] if sv else '' }}</span></p>
-        <p class="small muted">The video is turned into a 3D model on a cloud machine (OpenDroneMap). That takes 20 to 60 minutes for a few minutes of flying, about a dollar, once. You can leave this page.</p>
+    <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-drone"/></svg></span><div>
+      <h2 class="cdt-title">Drone survey <span class="cdt-badge">Optional</span></h2>
+      <p class="cdt-muted">A drone flight over the site, made into a 3D model of the real place. Near the works the film uses it in place of the map-made surroundings.</p></div></div>
+      <span data-survey-state></span></div>
+    <div class="cdt-card-body stack">
+      <div data-survey-busy class="cdt-infobar {{ '' if sv and sv['state'] in ('queued', 'running') else 'hidden' }}">
+        <span class="cdt-busy" style="margin-top:6px"><i></i><i></i><i></i></span>
+        <div class="ib-text"><b data-survey-message>{{ sv['message'] if sv else '' }}</b>
+        <p class="cdt-small cdt-muted">The video is turned into a 3D model on a cloud machine (OpenDroneMap). That takes 20 to 60 minutes for a few minutes of flying, about a dollar, once. You can leave this page.</p></div><span></span>
       </div>
-      <p class="state-warning small {{ '' if sv and sv['state'] == 'failed' else 'hidden' }}" data-survey-failed>▲ <span data-survey-why>{{ sv['message'] if sv else '' }}</span></p>
+      <div class="cdt-infobar error {{ '' if sv and sv['state'] == 'failed' else 'hidden' }}" data-survey-failed>
+        <svg class="cdt-ico"><use href="#i-error"/></svg><div class="ib-text"><b>Not made.</b><span data-survey-why>{{ sv['message'] if sv else '' }}</span></div><span></span></div>
       <form method="post" class="stack {{ '' if sv and sv['state'] == 'ready' else 'hidden' }}" action="{{ url_for('place_survey', pid=p['id']) }}" data-survey-place>
-        <p class="small muted" data-survey-hint>{% if sv and sv['state'] == 'ready' and not sv['metric'] %}The video had no GPS, so its position, size and direction are not known. Its plan is drawn on the map above: move and turn it until it sits on the satellite picture, and give its width.{% else %}Placed by the drone's GPS. Nudge it here if it is off.{% endif %}</p>
-        <div class="grid grid-3">
-          <label class="field"><span class="field-label">East (m)</span><input name="east" inputmode="decimal" value="{{ sv['place'].get('east', 0) if sv else 0 }}"></label>
-          <label class="field"><span class="field-label">North (m)</span><input name="north" inputmode="decimal" value="{{ sv['place'].get('north', 0) if sv else 0 }}"></label>
-          <label class="field"><span class="field-label">Turn (° clockwise)</span><input name="turn" inputmode="decimal" value="{{ sv['place'].get('turn', 0) if sv else 0 }}"></label>
-          <label class="field {{ 'hidden' if sv and sv['metric'] else '' }}" data-survey-width><span class="field-label">Width across (m)</span><input name="width" inputmode="decimal" value="{{ sv['place'].get('width', '') if sv else '' }}" placeholder="e.g. 250"></label>
-          <label class="field"><span class="field-label">Raise (m)</span><input name="up" inputmode="decimal" value="{{ sv['place'].get('up', 0) if sv else 0 }}"><span class="field-hint">Heights are matched to the ground round the works by themselves.</span></label>
+        <p class="cdt-muted" data-survey-hint>{% if sv and sv['state'] == 'ready' and not sv['metric'] %}The video had no GPS, so its position, size and direction are not known. Its plan is drawn on the map above: move and turn it until it sits on the satellite picture, and give its width.{% else %}Placed by the drone's GPS. Nudge it here if it is off.{% endif %}</p>
+        <div class="grid grid-5">
+          <label class="cdt-field"><span class="cdt-field-label">East</span><input class="cdt-input" name="east" inputmode="decimal" data-cdt-number data-unit="m" value="{{ sv['place'].get('east', 0) if sv else 0 }}"></label>
+          <label class="cdt-field"><span class="cdt-field-label">North</span><input class="cdt-input" name="north" inputmode="decimal" data-cdt-number data-unit="m" value="{{ sv['place'].get('north', 0) if sv else 0 }}"></label>
+          <label class="cdt-field"><span class="cdt-field-label">Turn, clockwise</span><input class="cdt-input" name="turn" inputmode="decimal" data-cdt-number data-unit="°" data-min="-360" data-max="360" value="{{ sv['place'].get('turn', 0) if sv else 0 }}"></label>
+          <label class="cdt-field {{ 'hidden' if sv and sv['metric'] else '' }}" data-survey-width><span class="cdt-field-label">Width across</span><input class="cdt-input" name="width" inputmode="decimal" data-cdt-number data-unit="m" data-min="0" data-step="5" value="{{ sv['place'].get('width', '') if sv else '' }}" placeholder="e.g. 250"></label>
+          <label class="cdt-field"><span class="cdt-field-label">Raise <span class="cdt-infotip" tabindex="0" data-tip="Heights are matched to the ground round the works by themselves; raise it only if it still sits wrong.">i</span></span><input class="cdt-input" name="up" inputmode="decimal" data-cdt-number data-unit="m" data-step="0.5" value="{{ sv['place'].get('up', 0) if sv else 0 }}"></label>
         </div>
-        <div class="row"><button class="btn btn-primary">Save the placement</button><span class="saved-note" data-survey-saved></span>
-          <button type="button" class="btn btn-ghost btn-sm" data-survey-remove>Remove the survey</button></div>
+        <div class="row"><button class="cdt-btn primary"><svg class="cdt-ico"><use href="#i-check"/></svg>Save the placement</button><span class="saved-note" data-survey-saved></span>
+          <span class="spacer"></span>
+          <button type="button" class="cdt-btn soft-danger sm" data-survey-remove><svg class="cdt-ico"><use href="#i-trash"/></svg>Remove the survey</button></div>
       </form>
       <form method="post" enctype="multipart/form-data" action="{{ url_for('upload_survey', pid=p['id']) }}" data-survey-upload>
-        <label class="drop slim">
+        <label class="drop cdt-pathbox">
           <input type="file" name="survey" multiple accept=".mp4,.mov,.avi,.mkv,.m4v,.ts,.srt,.jpg,.jpeg,.tif,.tiff,.png,.dng,.zip,.glb">
-          <span class="drop-icon" aria-hidden="true">⬆</span>
-          <span><span class="drop-title">{{ 'Replace the survey' if sv else 'Drop the drone video here, or click to choose it' }}</span><br>
-          <span class="small muted">A video (.mp4, .mov), with its .SRT file if the drone made one (it holds the GPS); or drone photos; or a finished model (.zip of an OBJ, or .glb). Up to 500 MB.{% if sv %} Now: {{ sv['name'] }}.{% endif %}</span></span>
+          <span class="glyph" aria-hidden="true"><svg class="cdt-ico xl"><use href="#i-upload"/></svg></span>
+          <span class="what"><b>{{ 'Replace the survey' if sv else 'Drop the drone video here, or click to choose it' }}</b>
+          <span class="cdt-small cdt-muted">A video (.mp4, .mov) with its .SRT file if the drone made one (it holds the GPS); or drone photos; or a finished model (.zip of an OBJ, or .glb). Up to 500 MB.{% if sv %} Now: {{ sv['name'] }}.{% endif %}</span></span>
+          <span class="cdt-btn browse" aria-hidden="true">Browse…</span>
         </label>
-        <noscript><button class="btn btn-primary mt-sm">Upload</button></noscript>
-        <div class="hidden" data-survey-sending>
-          <div class="row between small"><span data-survey-word>Uploading</span><span class="tabular" data-survey-num></span></div>
-          <div class="bar mt-sm"><div class="bar-fill" data-survey-bar style="width:0"></div></div>
+        <noscript><button class="cdt-btn primary mt-sm">Upload</button></noscript>
+        <div class="hidden mt-sm" data-survey-sending>
+          <div class="row between cdt-small"><span data-survey-word>Uploading</span><span class="cdt-tabular" data-survey-num></span></div>
+          <div class="cdt-progress mt-sm"><span class="bar-fill" data-survey-bar style="width:0"></span></div>
         </div>
       </form>
     </div>
@@ -147,14 +183,16 @@
 
 {# ---- 3. Sequence ----------------------------------------------------- #}
 <section class="pane" id="pane-sequence" data-pane="sequence">
-  <div class="card">
-    <div class="card-head"><div><h2>The build sequence</h2>
-      {% if m and m['sequence'] and m['sequence'][0].get('stage') %}
-      <p class="small muted" style="margin-top:2px">The planner's own stages, carried in the model, in the order they are built. Press play to watch them go; drag to turn, scroll to zoom.</p></div></div>
+  <div class="cdt-card">
+    <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-layers"/></svg></span><div>
+      <h2 class="cdt-title">The build sequence</h2>
+      {% if staged %}
+      <p class="cdt-muted">The planner's own stages, carried in the model, in the order they are built. Press play to watch them go.</p>
       {% else %}
-      <p class="small muted" style="margin-top:2px">Drafted from the model: storey by storey from the ground up, and in each storey foundations, columns and walls, beams, slabs, then the envelope. Press play to watch it go up; drag to turn, scroll to zoom.</p></div></div>
-      {% endif %}
-    <div class="card-body">
+      <p class="cdt-muted">Drafted from the model: storey by storey from the ground up, and in each storey foundations, columns and walls, beams, slabs, then the envelope. Press play to watch it go up.</p>
+      {% endif %}</div></div>
+      <span class="viewer-help cdt-small cdt-muted"><span class="cdt-kbd">Drag</span> turn <span class="cdt-kbd">Wheel</span> zoom <span class="cdt-kbd">Right-drag</span> pan</span></div>
+    <div class="cdt-card-body">
       {% if m and m['sequence'] %}
       <div class="split">
         <div>
@@ -164,19 +202,24 @@
             <div class="viewer-label hidden" data-viewer-label></div>
           </div>
           <div class="player">
-            <button type="button" class="btn btn-primary btn-sm" data-play disabled>▶ Play</button>
-            <input type="range" min="0" max="{{ m['sequence']|length }}" value="{{ m['sequence']|length }}" data-scrub disabled aria-label="Build step">
-            <span class="small tabular muted" data-scrub-word>{{ m['sequence']|length }} / {{ m['sequence']|length }}</span>
+            <button type="button" class="cdt-btn primary sm" data-play disabled>▶ Play</button>
+            <input class="cdt-slider" type="range" min="0" max="{{ m['sequence']|length }}" value="{{ m['sequence']|length }}" data-scrub disabled aria-label="Build step">
+            <span class="cdt-small cdt-tabular cdt-muted scrub-word" data-scrub-word>{{ m['sequence']|length }} / {{ m['sequence']|length }}</span>
           </div>
         </div>
-        <ol class="step-list" data-step-list>
-          {% for st in m['sequence'] %}
-          <li data-n="{{ st['step'] }}"><button type="button"><span class="n">{{ st['step'] }}</span><span>{{ st['phase'] }}<br><span class="small muted">{{ st['storey'] }}</span></span><span class="small muted tabular">{{ st['elements'] }}</span></button></li>
-          {% endfor %}
-        </ol>
+        <div class="step-side">
+          <p class="cdt-section-label">{{ m['sequence']|length }} {{ 'stages' if staged else 'steps' }}</p>
+          <ol class="cdt-list step-list" data-step-list>
+            {% for st in m['sequence'] %}
+            <li data-n="{{ st['step'] }}"><button type="button"><span class="n">{{ st['step'] }}</span><span class="what">{{ st['phase'] }}<br><span class="cdt-small cdt-muted">{{ st['storey'] }}</span></span><span class="cdt-badge cdt-tabular" title="Elements">{{ '{:,}'.format(st['elements']) }}</span></button></li>
+            {% endfor %}
+          </ol>
+        </div>
       </div>
       {% else %}
-        <p class="muted">The sequence is drafted from the model. Upload it first.</p>
+        <div class="cdt-empty"><span class="glyph"><svg class="cdt-ico xl"><use href="#i-layers"/></svg></span>
+          <h3 class="cdt-title">No sequence yet</h3><p>The sequence is drafted from the model. Upload it first.</p>
+          <a class="cdt-btn primary" href="#model">Upload the model</a></div>
       {% endif %}
     </div>
   </div>
@@ -186,39 +229,42 @@
 <section class="pane" id="pane-video" data-pane="video">
   <div class="stack">
     {% if m and m['sequence'] and p['latitude'] is not none %}
-    <div class="card" data-film-free>
-      <div class="card-head"><div><h2>The construction film</h2>
-        <p class="small muted" style="margin-top:2px">Played here in your browser, free: the model in its real place, with the ground, the aerial photograph, {{ 'the sea, ' if m.get('setting') == 'marine' }}the sky and the plant at work, built in the order of the sequence. Record it to save it as a video.</p></div></div>
-      <div class="card-body stack">
+    <div class="cdt-card" data-film-free>
+      <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-film"/></svg></span><div>
+        <h2 class="cdt-title">The construction film</h2>
+        <p class="cdt-muted">Played here in your browser, free: the model in its real place, with the ground, the aerial photograph, {{ 'the sea, ' if m.get('setting') == 'marine' }}the sky and the plant at work, built in the order of the sequence. Record it to save it as a video.</p></div></div>
+        {{ outcome('success', 'Free', 'check') }}</div>
+      <div class="cdt-card-body stack">
         <div class="viewer film-view" data-film data-model="{{ url_for('model_file', pid=p['id']) }}" data-steps="{{ url_for('steps', pid=p['id']) }}"
              data-web-ifc="https://cdn.jsdelivr.net/npm/web-ifc@0.0.66/" data-lat="{{ p['latitude'] }}" data-lon="{{ p['longitude'] }}"
              data-title="{{ p['name'] }}" data-file="{{ p['name'] }}">
           <div class="viewer-msg" data-film-msg><span>The film opens when you come to this tab.</span></div>
           <div class="film-hud hidden" data-film-hud></div>
         </div>
-        <div class="player" style="flex-wrap:wrap">
-          <button class="btn btn-primary btn-sm" data-film-play disabled>▶ Play</button>
-          <button class="btn btn-ghost btn-sm" data-film-record disabled>● Record video</button>
-          <select class="btn btn-ghost btn-sm" data-film-length disabled aria-label="Length">
+        <div class="player film-player">
+          <button class="cdt-btn primary sm" data-film-play disabled>▶ Play</button>
+          <input class="cdt-slider" type="range" min="0" max="1000" value="0" data-film-scrub disabled aria-label="Where in the film">
+          <select class="cdt-select sm" data-film-length disabled aria-label="Length">
             <option value="120">2 min</option><option value="150" selected>2½ min</option><option value="180">3 min</option></select>
-          <input type="range" min="0" max="1000" value="0" data-film-scrub disabled style="flex:1;min-width:160px">
+          <button class="cdt-btn soft-danger sm" data-film-record disabled>● Record video</button>
         </div>
-        <p class="small muted" data-film-note>Recording plays the whole film once and saves it to your downloads (MP4 in Chrome, Edge and Safari).</p>
+        <p class="cdt-small cdt-muted film-note"><svg class="cdt-ico"><use href="#i-info"/></svg><span data-film-note>Recording plays the whole film once and saves it to your downloads (MP4 in Chrome, Edge and Safari).</span></p>
       </div>
     </div>
     {% endif %}
 
-    <div class="card {{ '' if job and job['status'] in ('queued','running') else 'hidden' }}" data-live-card>
-      <div class="card-head"><div><h2><span class="pulse"></span><span data-live-title>Making the film</span></h2>
-        <p class="small muted" style="margin-top:2px" data-live-sub></p></div>
-        <form method="post" data-cancel action="{{ url_for('cancel_job', pid=p['id'], jid=job['id']) if job else '' }}"><button class="btn btn-ghost btn-sm">Stop</button></form></div>
-      <div class="card-body live">
+    <div class="cdt-card live-card {{ '' if job and job['status'] in ('queued','running') else 'hidden' }}" data-live-card>
+      <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile warn"><span class="cdt-busy"><i></i><i></i><i></i></span></span><div>
+        <h2 class="cdt-title" data-live-title>Making the film</h2>
+        <p class="cdt-muted" data-live-sub></p></div></div>
+        <form method="post" data-cancel action="{{ url_for('cancel_job', pid=p['id'], jid=job['id']) if job else '' }}"><button class="cdt-btn soft-danger sm"><svg class="cdt-ico"><use href="#i-stop"/></svg>Stop</button></form></div>
+      <div class="cdt-card-body live">
         <div class="frame" data-frame><span data-frame-word>The first frames appear here as they are rendered.</span></div>
         <div class="stack">
           <div><span class="big-num" data-pct>0%</span>
-            <div class="bar mt-sm"><div class="bar-fill" data-pct-bar style="width:0"></div></div>
-            <p class="small muted mt-sm tabular" data-numbers></p></div>
-          <ol class="timeline" data-timeline>
+            <div class="cdt-progress mt-sm"><span class="bar-fill" data-pct-bar style="width:0"></span></div>
+            <p class="cdt-small cdt-muted mt-sm cdt-tabular" data-numbers></p></div>
+          <ol class="cdt-timeline timeline" data-timeline>
             <li data-k="queued">Waiting for a cloud GPU</li>
             <li data-k="starting">Reading the model</li>
             <li data-k="surroundings">Fetching the real surroundings</li>
@@ -231,66 +277,72 @@
       </div>
     </div>
 
-    <div class="card {{ '' if done else 'hidden' }}" data-film-card>
-      <div class="card-head"><div><h2>The film</h2><p class="small muted" style="margin-top:2px" data-film-meta>
-        {% if done %}{{ done['quality']|title }}, {{ done['seconds']|int }} s{% if done['message'] %} · {{ done['message'] }}{% endif %}{% endif %}</p></div>
-        <a class="btn btn-ghost btn-sm" data-download {% if done %}href="{{ done['video_url'] }}"{% endif %} download>Download MP4</a></div>
-      <div class="card-body film">
+    <div class="cdt-card {{ '' if done else 'hidden' }}" data-film-card>
+      <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile ok"><svg class="cdt-ico lg"><use href="#i-check-circle"/></svg></span><div>
+        <h2 class="cdt-title">The rendered film</h2><p class="cdt-muted" data-film-meta>
+        {% if done %}{{ done['quality']|title }}, {{ done['seconds']|int }} s{% if done['message'] %} · {{ done['message'] }}{% endif %}{% endif %}</p></div></div>
+        <a class="cdt-btn sm" data-download {% if done %}href="{{ done['video_url'] }}"{% endif %} download><svg class="cdt-ico"><use href="#i-download"/></svg>Download MP4</a></div>
+      <div class="cdt-card-body film">
         <video controls preload="metadata" playsinline data-video {% if done %}src="{{ done['video_url'] }}"{% endif %}></video>
       </div>
     </div>
 
-    <div class="card" data-make-card>
-      <div class="card-head"><div><h2 data-make-title>{{ 'Make it again' if done else 'Make it real (GPU render)' }}</h2>
-        <p class="small muted" style="margin-top:2px">A later step: rendered in the cloud on GPUs, which costs GPU time. Leave the page open to watch it come together, or come back later.</p></div></div>
-      <div class="card-body">
+    <div class="cdt-card" data-make-card>
+      <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-sparkle"/></svg></span><div>
+        <h2 class="cdt-title" data-make-title>{{ 'Make it again' if done else 'Make it real (GPU render)' }}</h2>
+        <p class="cdt-muted">A later step: rendered in the cloud on GPUs, which costs GPU time. Leave the page open to watch it come together, or come back later.</p></div></div>
+        <span class="cdt-badge">Paid</span></div>
+      <div class="cdt-card-body">
         {% if p['model_name'] and p['latitude'] is not none %}
         <form method="post" action="{{ url_for('render_video', pid=p['id']) }}" class="stack" data-render>
           <fieldset class="choices">
-            <legend class="field-label">Quality</legend>
+            <legend class="cdt-field-label">Quality</legend>
             {% for key, name, size, what, fps, per in QUALITY_CHOICES %}
             <label class="choice"><input type="radio" name="quality" value="{{ key }}" {{ 'checked' if key == 'draft' }}>
-              <span><b>{{ name }}</b><span class="small muted">{{ size }}</span><br><span class="small ink2">{{ what }}</span></span></label>
+              <span><span class="choice-top"><b>{{ name }}</b><i class="radio" aria-hidden="true"></i></span><span class="cdt-small cdt-muted cdt-mono">{{ size }}</span><span class="cdt-small choice-what">{{ what }}</span></span></label>
             {% endfor %}
           </fieldset>
-          <label class="field"><span class="field-label">Length</span>
-            <span class="length"><input type="range" name="seconds" min="15" max="300" step="15" value="90" data-length><output data-length-word>1 min 30 s</output></span></label>
+          <label class="cdt-field"><span class="cdt-field-label">Length</span>
+            <span class="length"><input class="cdt-slider" type="range" name="seconds" min="15" max="300" step="15" value="90" data-length><output class="cdt-badge" data-length-word>1 min 30 s</output></span></label>
           <div class="estimate" data-estimate>
-            <span>About <b data-est-min>{{ estimates['draft']['minutes'] }} min</b> to make</span>
-            <span>on <b data-est-gpus>{{ estimates['draft']['gpus'] }}</b> GPUs</span>
-            <span>about <b data-est-cost>${{ '%.2f'|format(estimates['draft']['cost']) }}</b></span>
-            <span class="muted" data-est-frames>{{ estimates['draft']['frames'] }} frames</span>
+            <div><p class="cdt-stat-label">Time to make</p><p class="est-num" data-est-min>{{ estimates['draft']['minutes'] }} min</p></div>
+            <div><p class="cdt-stat-label">GPUs</p><p class="est-num" data-est-gpus>{{ estimates['draft']['gpus'] }}</p></div>
+            <div><p class="cdt-stat-label">Cost, about</p><p class="est-num" data-est-cost>${{ '%.2f'|format(estimates['draft']['cost']) }}</p></div>
+            <div><p class="cdt-stat-label">Frames</p><p class="est-num" data-est-frames>{{ estimates['draft']['frames'] }} frames</p></div>
           </div>
-          <div class="row"><button class="btn btn-primary" data-render-button {{ 'disabled' if job and job['status'] in ('queued','running') }}>{{ 'Make it again' if done else 'Make the film' }}</button>
-            <span class="small muted" data-machine-word></span></div>
+          <div class="row"><button class="cdt-btn primary" data-render-button {{ 'disabled' if job and job['status'] in ('queued','running') }}><svg class="cdt-ico"><use href="#i-sparkle"/></svg>{{ 'Make it again' if done else 'Make the film' }}</button>
+            <span class="cdt-small cdt-muted" data-machine-word></span></div>
         </form>
         {% else %}
-          <p class="muted">{{ 'Upload the model first.' if not p['model_name'] else 'Place it on the map first: the surroundings are rebuilt from the location.' }}</p>
+          <div class="cdt-infobar warning"><svg class="cdt-ico"><use href="#i-warning"/></svg><div class="ib-text">{{ 'Upload the model first.' if not p['model_name'] else 'Place it on the map first: the surroundings are rebuilt from the location.' }}</div><span></span></div>
         {% endif %}
       </div>
     </div>
 
-    <div class="card {{ '' if s['history']|length > 0 else 'hidden' }}" data-history-card>
-      <div class="card-head"><h2>Every film of this project</h2></div>
-      <div class="card-body flush table-scroll"><table>
-        <thead><tr><th>Asked</th><th>Quality</th><th class="right">Length</th><th>Result</th><th></th></tr></thead>
+    <div class="cdt-card {{ '' if s['history']|length > 0 else 'hidden' }}" data-history-card>
+      <div class="cdt-card-head"><div class="lead"><span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-clock"/></svg></span><div><h2 class="cdt-title">Every film of this project</h2></div></div></div>
+      <div class="cdt-card-body"><div class="cdt-grid-wrap"><table class="cdt-grid">
+        <thead><tr><th>Asked</th><th>Quality</th><th class="num">Length</th><th>Result</th><th></th></tr></thead>
         <tbody data-history></tbody>
-      </table></div>
+      </table></div></div>
     </div>
   </div>
 </section>
 
-<div class="danger-zone">
-  <form method="post" action="{{ url_for('delete_project', pid=p['id']) }}" data-confirm="Delete {{ p['name'] }}, its model and its films?">
-    <button class="btn btn-danger btn-sm">Delete this project</button>
+<div class="cdt-errorcard danger-zone">
+  <div><b>Delete this project</b><p class="cdt-small cdt-muted">Its model, drone survey and films go for good.</p></div>
+  <form method="post" id="delete-form" action="{{ url_for('delete_project', pid=p['id']) }}" data-confirm="Delete {{ p['name'] }}?"
+        data-confirm-message="Its model, its drone survey and every film go for good. This cannot be undone." data-confirm-ok="Delete" data-confirm-danger>
+    <button class="cdt-btn soft-danger sm"><svg class="cdt-ico"><use href="#i-trash"/></svg>Delete this project</button>
   </form>
 </div>
 <script type="application/json" id="state">{{ s|tojson }}</script>
 {% endblock %}
 {% block scripts %}
 <script src="{{ url_for('static', filename='vendor/leaflet/leaflet.js') }}"></script>
-<script src="{{ url_for('static', filename='sitetwin-project.js') }}" data-pid="{{ p['id'] }}"
+<script src="{{ url_for('static', filename='sitetwin-project.js') }}?v={{ VERSION }}" data-pid="{{ p['id'] }}"
         data-state-url="{{ url_for('project_state', pid=p['id']) }}" data-estimate-url="{{ url_for('project_estimate', pid=p['id']) }}"
+        data-rename-url="{{ url_for('rename_project', pid=p['id']) }}"
         data-viewer-js="{{ url_for('static', filename='sitetwin-viewer.js') }}"
         data-film-js="{{ url_for('static', filename='sitetwin-film.js') }}"></script>
 {% endblock %}

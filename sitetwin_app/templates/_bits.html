@@ -16,13 +16,27 @@
   {%- endif -%}
 {%- endmacro %}
 
+{# A CDT.OutcomeLabel: glyph + word + colour. #}
+{% macro outcome(kind, word, glyph=none) -%}
+  <span class="cdt-outcome {{ kind }}">{% if kind == 'warning' and not glyph %}<span class="cdt-dot warn"></span>{% else %}<svg class="cdt-ico"><use href="#i-{{ glyph or {'success': 'check', 'danger': 'error', 'accent': 'arrow-right'}.get(kind, 'info') }}"/></svg>{% endif %}{{ word }}</span>
+{%- endmacro %}
+
 {% macro status_badge(p) -%}
   {%- set j = p['job'] -%}
-  {%- if j and j['status'] == 'running' -%}<span class="badge warning"><span class="pulse"></span>Rendering {{ j['percent']|round|int }}%</span>
-  {%- elif j and j['status'] == 'queued' -%}<span class="badge warning"><span class="pulse"></span>Waiting for a GPU</span>
-  {%- elif p['done'] -%}<span class="badge good">● Film ready</span>
-  {%- elif j and j['status'] == 'failed' -%}<span class="badge critical">■ Render failed</span>
-  {%- elif not p['model_name'] -%}<span class="badge">Needs the model</span>
-  {%- elif p['latitude'] is none -%}<span class="badge">Needs the location</span>
-  {%- else -%}<span class="badge">Ready to render</span>{%- endif -%}
+  {%- if j and j['status'] == 'running' -%}{{ outcome('warning', 'Rendering ' ~ (j['percent']|round|int) ~ '%') }}
+  {%- elif j and j['status'] == 'queued' -%}{{ outcome('warning', 'Waiting for a GPU') }}
+  {%- elif p['done'] -%}{{ outcome('success', 'Film ready') }}
+  {%- elif j and j['status'] == 'failed' -%}{{ outcome('danger', 'Render failed') }}
+  {%- elif not p['model_name'] -%}{{ outcome('', 'Needs the model', 'upload') }}
+  {%- elif p['latitude'] is none -%}{{ outcome('', 'Needs the location', 'pin') }}
+  {%- else -%}{{ outcome('accent', 'Ready to render', 'film') }}{%- endif -%}
+{%- endmacro %}
+
+{# Which filter chip a project falls under on the projects page. #}
+{% macro status_key(p) -%}
+  {%- set j = p['job'] -%}
+  {%- if j and j['status'] in ('running', 'queued') -%}rendering
+  {%- elif p['done'] -%}ready
+  {%- elif not p['model_name'] or p['latitude'] is none -%}setup
+  {%- else -%}torender{%- endif -%}
 {%- endmacro %}

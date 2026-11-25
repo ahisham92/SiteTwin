@@ -13,6 +13,12 @@
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
   var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
   var toast = window.siteTwinToast || function () {};
+  var CDT = window.CDT;
+  // A CDT.OutcomeLabel: glyph + word + colour.
+  function outcome(kind, word) {
+    var glyph = kind === 'warning' ? '<span class="cdt-dot warn"></span>' : CDT.icon({ success: 'check', danger: 'error', accent: 'film' }[kind] || 'stop');
+    return '<span class="cdt-outcome ' + kind + '">' + glyph + esc(word) + '</span>';
+  }
   var esc = function (t) { return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); };
 
   function ask(url, opts) {
@@ -107,7 +113,7 @@
       bar.style.width = pct + '%';
       word.textContent = 'Uploading ' + file.name;
       num.textContent = mb(ev.loaded) + ' of ' + mb(ev.total);
-      if (ev.loaded >= ev.total) { word.innerHTML = '<span class="pulse"></span>Reading the model: its elements, storeys and location…'; num.textContent = ''; }
+      if (ev.loaded >= ev.total) { word.innerHTML = '<span class="cdt-busy"><i></i><i></i><i></i></span> Reading the model: its elements, storeys and location…'; num.textContent = ''; }
     };
     xhr.onload = function () {
       var body = {};
@@ -181,7 +187,7 @@
           .then(function (r) { return r.json(); })
           .then(function (found) {
             results.innerHTML = found.length ? found.map(function (f, i) { return '<li><button type="button" data-i="' + i + '">' + esc(f.display_name) + '</button></li>'; }).join('')
-              : '<li class="small muted" style="padding:7px 10px">Nothing found. Try another name.</li>';
+              : '<li class="cdt-small cdt-muted" style="padding:7px 10px">Nothing found. Try another name.</li>';
             results.classList.remove('hidden');
             $$('button', results).forEach(function (b) {
               b.addEventListener('click', function () {
@@ -242,12 +248,12 @@
     $('[data-survey-width]').classList.toggle('hidden', !!(sv && sv.metric));
     $('[data-survey-message]').textContent = sv && sv.message ? sv.message : '';
     $('[data-survey-why]').textContent = sv && sv.message ? sv.message : '';
-    $('[data-survey-state]').innerHTML = !sv ? '' : st === 'ready' ? '<span class="state-good">● Ready</span>'
-      : st === 'failed' ? '<span class="state-warning">▲ Not made</span>' : '<span class="muted">Being made</span>';
+    $('[data-survey-state]').innerHTML = !sv ? '' : st === 'ready' ? outcome('success', 'Ready')
+      : st === 'failed' ? outcome('danger', 'Not made') : outcome('warning', 'Being made');
     drawPlan();
   }
   if (svForm) {
-    ['east', 'north', 'turn', 'width'].forEach(function (k) { if (svForm[k]) svForm[k].addEventListener('input', drawPlan); });
+    ['east', 'north', 'turn', 'width'].forEach(function (k) { if (svForm[k]) { svForm[k].addEventListener('input', drawPlan); svForm[k].addEventListener('change', drawPlan); } });
     svForm.addEventListener('submit', function (ev) {
       ev.preventDefault();
       var saved = $('[data-survey-saved]'), body = {};
@@ -258,8 +264,12 @@
         .catch(function (e) { saved.textContent = ''; toast(e.message, true); });
     });
     $('[data-survey-remove]').addEventListener('click', function () {
-      ask(svCard.dataset.deleteUrl, { method: 'POST' }).then(function (s) { apply(s); location.reload(); })
-        .catch(function (e) { toast(e.message, true); });
+      CDT.confirm({ title: 'Remove the drone survey?', message: 'The film goes back to the map-made surroundings near the works. You can send the survey again later.', ok: 'Remove', danger: true })
+        .then(function (yes) {
+          if (!yes) return;
+          ask(svCard.dataset.deleteUrl, { method: 'POST' }).then(function (s) { apply(s); location.reload(); })
+            .catch(function (e) { toast(e.message, true); });
+        });
     });
   }
   if (svUpload) {
@@ -350,8 +360,11 @@
   var cancel = $('[data-cancel]');
   cancel.addEventListener('submit', function (ev) {
     ev.preventDefault();
-    if (!window.confirm('Stop making this film? What has been rendered so far is thrown away.')) return;
-    ask(cancel.action, { method: 'POST' }).then(function (s) { apply(s); toast('Stopped.'); }).catch(function (e) { toast(e.message, true); });
+    CDT.confirm({ title: 'Stop making this film?', message: 'What has been rendered so far is thrown away.', ok: 'Stop it', cancel: 'Keep going', danger: true })
+      .then(function (yes) {
+        if (!yes) return;
+        ask(cancel.action, { method: 'POST' }).then(function (s) { apply(s); toast('Stopped.'); }).catch(function (e) { toast(e.message, true); });
+      });
   });
 
   var ORDER = ['queued', 'starting', 'surroundings', 'scene', 'frames', 'joining', 'uploading', 'done'];
@@ -423,11 +436,12 @@
     $('[data-history-card]').classList.toggle('hidden', !list.length);
     var when = function (t) { return new Date(t * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }); };
     $('[data-history]').innerHTML = list.map(function (j) {
-      var result = j.status === 'done' ? '<span class="badge good">● Made in ' + esc(duration(j.elapsed)) + '</span> <span class="small muted">' + esc(j.message || '') + '</span>'
-        : j.status === 'failed' ? '<span class="badge critical">■ ' + (j.message === 'Stopped by you.' ? 'Stopped' : 'Failed') + '</span> <span class="small muted">' + esc(j.message || '') + '</span>'
-        : '<span class="badge warning"><span class="pulse"></span>' + (j.status === 'queued' ? 'Waiting' : 'Rendering ' + Math.round(j.percent) + '%') + '</span>';
-      return '<tr><td class="nowrap">' + when(j.created) + '</td><td>' + esc(j.quality) + '</td><td class="right tabular">' + filmLength(j.seconds) + '</td><td>' + result + '</td><td class="right">'
-        + (j.video_url ? '<a href="' + j.video_url + '" download>MP4</a>' : '') + '</td></tr>';
+      var stopped = j.message === 'Stopped by you.';
+      var result = j.status === 'done' ? outcome('success', 'Made in ' + duration(j.elapsed)) + ' <span class="cdt-small cdt-muted">' + esc(j.message || '') + '</span>'
+        : j.status === 'failed' ? outcome(stopped ? '' : 'danger', stopped ? 'Stopped' : 'Failed') + ' <span class="cdt-small cdt-muted">' + esc(j.message || '') + '</span>'
+        : outcome('warning', j.status === 'queued' ? 'Waiting' : 'Rendering ' + Math.round(j.percent) + '%');
+      return '<tr><td class="nowrap">' + when(j.created) + '</td><td>' + esc(j.quality.charAt(0).toUpperCase() + j.quality.slice(1)) + '</td><td class="num">' + filmLength(j.seconds) + '</td><td>' + result + '</td><td class="num">'
+        + (j.video_url ? '<a class="cdt-btn sm" href="' + j.video_url + '" download>' + CDT.icon('download') + 'MP4</a>' : '') + '</td></tr>';
     }).join('');
   }
 
@@ -480,6 +494,24 @@
     ask(STATE_URL).then(apply).catch(function () { schedule(true); });
   }
   document.addEventListener('visibilitychange', function () { if (!document.hidden) poll(); });
+
+  // ---- renaming --------------------------------------------------------------------
+  $$('[data-rename]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      CDT.prompt({ title: 'Rename the project', icon: 'edit', ok: 'Rename', field: { label: 'Name', value: state.project.name, max: 200 } })
+        .then(function (name) {
+          if (!name || name === state.project.name) return;
+          var body = new FormData(); body.append('name', name);
+          ask(me.dataset.renameUrl, { method: 'POST', body: body }).then(function (s) {
+            apply(s);
+            $('[data-name]').textContent = s.project.name;
+            $('[data-crumb-name]').textContent = s.project.name;
+            document.title = s.project.name + ' · SiteTwin';
+            toast('Renamed.');
+          }).catch(function (e) { toast(e.message, true); });
+        });
+    });
+  });
 
   window.addEventListener('hashchange', function () { show(firstPane(), false); });
   show(firstPane(), false);
