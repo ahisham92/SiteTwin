@@ -31,6 +31,10 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install "modal>=1.0" "bpy==5.2.3" numpy pillow
+      - name: Trim the Modal tokens (secrets saved with a line break)
+        run: |
+          echo "MODAL_TOKEN_ID=$(printf '%s' "$MODAL_TOKEN_ID" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+          echo "MODAL_TOKEN_SECRET=$(printf '%s' "$MODAL_TOKEN_SECRET" | tr -d '[:space:]')" >> "$GITHUB_ENV"
       - name: Fetch the video
         env:
           VIDEO: ${{ inputs.video }}
