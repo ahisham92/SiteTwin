@@ -91,7 +91,7 @@ def odm_command(project: Path, info: dict[str, Any], frames: int = 450, quality:
             "--video-limit", str(frames), "--video-resolution", "2400",
             "--feature-quality", "high", "--pc-quality", quality,
             "--mesh-size", "400000", "--mesh-octree-depth", "11",
-            "--auto-boundary",
+            "--auto-boundary", "--use-3dmesh",
             "--orthophoto-resolution", "5", "--skip-report", "--optimize-disk-space"]
     if not info.get("gps"):
         # no GPS: video frames are matched with their neighbours in time
