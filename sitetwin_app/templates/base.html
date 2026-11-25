@@ -1,44 +1,80 @@
 <!doctype html>
-<html lang="en" class="no-js">
+<html lang="en" class="no-js" data-brand="dar">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}SiteTwin{% endblock %}</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='sitetwin.css') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="{{ url_for('static', filename='cdt/cdt.css') }}?v={{ VERSION }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='sitetwin.css') }}?v={{ VERSION }}">
   {% block head %}{% endblock %}
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232a78d6'/><text x='16' y='22' font-family='system-ui' font-size='11' font-weight='700' fill='white' text-anchor='middle'>AHM</text></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23147165'/><path transform='translate(4 9.5) scale(1.5)' fill='%2332dac4' d='M4,0 H5 V8 L4,9 H1 L0,8 V4 L1,3 H4 Z M1,4 V8 H4 V4 Z M7,3 H10 L11,4 V8 L10,9 H7 L6,8 V6 L7,5 H10 V4 H7 Z M7,6 V8 H10 V6 Z M12,4 L13,3 H16 V4 H13 V9 H12 Z'/></svg>">
   <script>
-    // Same theme switch and storage key as the rest of the site, applied before first paint.
+    // The theme (shared with the rest of the site) and the CDT brand, applied before first paint.
     document.documentElement.classList.replace('no-js', 'js');
-    try { var t = localStorage.getItem('pm-theme'); if (t && t !== 'system') document.documentElement.setAttribute('data-theme', t); } catch (e) {}
+    try {
+      var t = localStorage.getItem('pm-theme'); if (t && t !== 'system') document.documentElement.setAttribute('data-theme', t);
+      var b = localStorage.getItem('cdt-brand'); if (b) document.documentElement.setAttribute('data-brand', b);
+    } catch (e) {}
   </script>
 </head>
 <body>
-  <header class="topbar">
-    <div class="wrap">
-      <div class="topbar-inner">
-        <a class="brand" href="{{ (site_root or '') ~ '/' }}" title="Home: every app" aria-label="AHM, home">
-          <span class="brand-mark brand-mark-word">AHM</span>
-        </a>
-        <a class="app-name" href="{{ url_for('home') }}">SiteTwin</a>
-        <div class="spacer"></div>
-        <button type="button" class="btn btn-ghost btn-sm" data-theme-toggle aria-label="Switch theme">Auto</button>
-        {% if who %}
-          <div class="whoami small">
-            <div>{{ who['name'] }}</div>
-            {% if who.get('login') %}<div class="muted">{{ who['login'] }}</div>{% endif %}
+  {% include "_icons.html" %}
+  {% set mc = machine if machine is defined else (s['machine'] if s is defined else none) %}
+  <header class="cdt-appbar">
+    <div class="wrap cdt-appbar-inner">
+      <a class="cdt-apptitle" href="{{ url_for('home') }}" aria-label="SiteTwin, all projects">
+        <svg class="cdt-darlogo" viewBox="0 0 16 9" aria-hidden="true"><use href="#i-dar"/></svg>
+        <span class="sep" aria-hidden="true"></span>
+        <span class="name">SiteTwin</span>
+        <span class="cdt-version">v{{ VERSION }}</span>
+      </a>
+      {% block crumbs %}{% endblock %}
+      <div class="spacer"></div>
+      {% if mc %}
+      <span class="machine-chip" data-machine-chip
+            data-tip="{% if not mc['configured'] %}The site has no render-machine token yet{% elif mc['awake'] %}The render machine checked in {{ (mc['seen_ago'] // 60)|int }} min ago{% elif mc['seen_ago'] is not none %}The render machine wakes when a film is asked for{% else %}The render machine has not checked in yet{% endif %}" data-tip-pos="bottom">
+        <span class="cdt-dot {{ 'ok' if mc['awake'] else ('error' if not mc['configured'] else '') }}"></span>
+        <span class="label">{% if not mc['configured'] %}No render machine{% elif mc['awake'] %}GPU ready{% elif mc['seen_ago'] is not none %}GPU asleep{% else %}GPU waiting{% endif %}</span>
+      </span>
+      {% endif %}
+      <div class="cdt-dropdown">
+        <button type="button" class="cdt-btn icon" data-cdt-dropdown aria-expanded="false" aria-haspopup="menu" aria-label="Look and settings" data-tip="Look and settings" data-tip-pos="left">
+          <svg class="cdt-ico lg"><use href="#i-settings"/></svg></button>
+        <div class="cdt-menu" role="menu" hidden>
+          <p class="cdt-menu-label cdt-section-label">Theme</p>
+          <div class="cdt-segment" data-cdt-segment role="group" aria-label="Theme">
+            <button type="button" data-cdt-theme="system"><svg class="cdt-ico"><use href="#i-auto"/></svg>Auto</button>
+            <button type="button" data-cdt-theme="light"><svg class="cdt-ico"><use href="#i-sun"/></svg>Light</button>
+            <button type="button" data-cdt-theme="dark"><svg class="cdt-ico"><use href="#i-moon"/></svg>Dark</button>
           </div>
-        {% endif %}
+          <p class="cdt-menu-label cdt-section-label">Brand</p>
+          <div class="cdt-segment" data-cdt-segment role="group" aria-label="Brand">
+            <button type="button" data-cdt-brand="dar"><span class="brand-swatch dar"></span>Dar</button>
+            <button type="button" data-cdt-brand="cdt"><span class="brand-swatch cdt"></span>CDT</button>
+          </div>
+          <div class="cdt-menu-sep"></div>
+          <a class="cdt-menurow" role="menuitem" href="{{ (site_root or '') ~ '/' }}"><svg class="cdt-ico"><use href="#i-home"/></svg>Every app on the site</a>
+        </div>
       </div>
+      {% if who %}
+      <div class="whoami">
+        <span class="cdt-avatar" aria-hidden="true">{{ (who['name'] or '?')[:1]|upper }}</span>
+        <span class="who-text"><span class="who-name">{{ who['name'] }}</span>{% if who.get('login') %}<span class="cdt-muted cdt-caption">{{ who['login'] }}</span>{% endif %}</span>
+      </div>
+      {% endif %}
     </div>
   </header>
-  <main>
+  <main class="cdt-page">
     <div class="wrap">
       {% block content %}{% endblock %}
     </div>
   </main>
-  <div class="toast hidden" role="status" aria-live="polite"></div>
-  <script src="{{ url_for('static', filename='sitetwin.js') }}"></script>
+  <div class="cdt-toasts" aria-live="polite"></div>
+  <script src="{{ url_for('static', filename='cdt/cdt.js') }}?v={{ VERSION }}"></script>
+  <script src="{{ url_for('static', filename='sitetwin.js') }}?v={{ VERSION }}"></script>
   {% block scripts %}{% endblock %}
 </body>
 </html>

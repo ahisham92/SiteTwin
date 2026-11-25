@@ -1,50 +1,66 @@
-// SiteTwin, on every page: the theme switch (shared with the rest of the site), a toast,
-// and the projects list kept live while a film is being made.
+// SiteTwin, on every page: the toast (a CDT InfoBar), and on the projects page the new-project
+// dialog, the search and filter chips, and the cards kept live while a film is being made.
+// The theme, brand, dialogs and menus come from cdt/cdt.js.
 (function () {
   'use strict';
-  var LABELS = { system: 'Auto', light: 'Light', dark: 'Dark' };
-  var NEXT = { system: 'light', light: 'dark', dark: 'system' };
-  function current() { try { return localStorage.getItem('pm-theme') || 'system'; } catch (e) { return 'system'; } }
-  function apply(t) {
-    if (t === 'system') document.documentElement.removeAttribute('data-theme');
-    else document.documentElement.setAttribute('data-theme', t);
-    var b = document.querySelector('[data-theme-toggle]');
-    if (b) { b.textContent = LABELS[t]; b.title = 'Theme: ' + t + '. Click to switch.'; }
+  var CDT = window.CDT;
+  window.siteTwinToast = function (text, bad) { CDT.toast(text, bad ? 'error' : 'success'); };
+  var $ = function (sel, root) { return (root || document).querySelector(sel); };
+  var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+
+  // ---- a new project, named in a dialog --------------------------------------------------
+  var form = $('[data-new-project]');
+  function askName() {
+    CDT.prompt({ title: 'A new project', message: 'Give it a name you will know it by. The model and its place come next.',
+      icon: 'plus', ok: 'Create', field: { label: 'Project name', placeholder: 'e.g. Jiyeh tower', max: 200 } })
+      .then(function (name) { if (!name) return; form.elements.name.value = name; form.submit(); });
   }
-  document.addEventListener('click', function (ev) {
-    if (!ev.target.closest('[data-theme-toggle]')) return;
-    var t = NEXT[current()] || 'light';
-    try { localStorage.setItem('pm-theme', t); } catch (e) { /* private mode */ }
-    apply(t);
+  if (form) {
+    form.classList.add('as-button');
+    form.elements.name.required = false;
+    form.addEventListener('submit', function (ev) { if (!form.elements.name.value.trim()) { ev.preventDefault(); askName(); } });
+    var b = $('[data-new-project-button]');
+    if (b) b.addEventListener('click', askName);
+  }
+
+  // ---- search and filter chips -------------------------------------------------------------
+  var cards = $$('.project[data-key]');
+  var search = $('[data-project-search]'), filter = 'all';
+  function apply() {
+    var q = search ? search.value.trim().toLowerCase() : '', shown = 0;
+    cards.forEach(function (c) {
+      var ok = (filter === 'all' || c.dataset.key === filter) && (!q || c.dataset.text.indexOf(q) >= 0);
+      c.classList.toggle('hidden', !ok);
+      if (ok) shown++;
+    });
+    var none = $('[data-no-match]');
+    if (none) none.classList.toggle('hidden', shown > 0 || !cards.length);
+  }
+  if (search) search.addEventListener('input', apply);
+  $$('[data-filter]').forEach(function (chip) {
+    chip.addEventListener('click', function () {
+      filter = chip.dataset.filter;
+      $$('[data-filter]').forEach(function (c) { c.setAttribute('aria-pressed', c === chip ? 'true' : 'false'); });
+      apply();
+    });
   });
-  apply(current());
+  var clear = $('[data-clear-filter]');
+  if (clear) clear.addEventListener('click', function () { if (search) search.value = ''; var all = $('[data-filter=all]'); if (all) all.click(); else apply(); });
 
-  document.addEventListener('submit', function (ev) {
-    var f = ev.target.closest('form[data-confirm]');
-    if (f && !window.confirm(f.dataset.confirm)) ev.preventDefault();
-  });
-
-  var toastTimer;
-  window.siteTwinToast = function (text, bad) {
-    var t = document.querySelector('.toast');
-    if (!t) return;
-    t.textContent = text;
-    t.classList.toggle('error', !!bad);
-    t.classList.remove('hidden');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.classList.add('hidden'); }, bad ? 6000 : 3000);
-  };
-
-  // The projects list: a card whose film is being made asks for its state every few seconds.
-  var live = document.querySelectorAll('.project[data-live]');
+  // ---- cards whose film is being made ask for their state every few seconds ------------------
+  var live = $$('.project[data-live]');
   if (!live.length) return;
+  function outcome(kind, word) {
+    var glyph = kind === 'warning' ? '<span class="cdt-dot warn"></span>' : CDT.icon({ success: 'check', danger: 'error', accent: 'film' }[kind] || 'info');
+    return '<span class="cdt-outcome ' + kind + '">' + glyph + CDT.esc(word) + '</span>';
+  }
   function badge(s) {
     var j = s.job;
-    if (j && j.status === 'running') return '<span class="badge warning"><span class="pulse"></span>Rendering ' + Math.round(j.percent) + '%</span>';
-    if (j && j.status === 'queued') return '<span class="badge warning"><span class="pulse"></span>Waiting for a GPU</span>';
-    if (s.done) return '<span class="badge good">● Film ready</span>';
-    if (j && j.status === 'failed') return '<span class="badge critical">■ Render failed</span>';
-    return '<span class="badge">Ready to render</span>';
+    if (j && j.status === 'running') return outcome('warning', 'Rendering ' + Math.round(j.percent) + '%');
+    if (j && j.status === 'queued') return outcome('warning', 'Waiting for a GPU');
+    if (s.done) return outcome('success', 'Film ready');
+    if (j && j.status === 'failed') return outcome('danger', 'Render failed');
+    return outcome('accent', 'Ready to render');
   }
   function tick() {
     live.forEach(function (card) {
@@ -52,8 +68,8 @@
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (s) {
           if (!s) return;
-          card.querySelector('[data-badge]').innerHTML = badge(s);
-          card.querySelectorAll('.pip').forEach(function (pip, i) {
+          $('[data-badge]', card).innerHTML = badge(s);
+          $$('.pip', card).forEach(function (pip, i) {
             pip.className = 'pip ' + s.stages[['model', 'location', 'sequence', 'video'][i]];
           });
         }).catch(function () {});

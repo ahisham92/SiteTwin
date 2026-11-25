@@ -1,64 +1,113 @@
 {% extends "base.html" %}
-{% from "_bits.html" import status_badge %}
+{% from "_bits.html" import status_badge, status_key %}
+{% block crumbs %}<nav class="crumbs" aria-label="Where you are"><span class="cdt-navitem active"><svg class="cdt-ico"><use href="#i-grid"/></svg>Projects</span></nav>{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div>
-    <h1>SiteTwin</h1>
-    <p class="small muted" style="margin-top:2px">Your Revit model, built in its real surroundings, as a film with the cranes, trucks and crews that build it.</p>
+  <div class="page-title">
+    <p class="cdt-section-label">Construction sequence films</p>
+    <h1 class="cdt-hero">Your projects</h1>
+    <p class="cdt-muted lead">Your Revit model, built in its real surroundings, as a film with the cranes, trucks and crews that build it.</p>
   </div>
-  <form class="new-project" method="post" action="{{ url_for('new_project') }}">
-    <input name="name" required maxlength="200" placeholder="Name the new project, e.g. Jiyeh tower" aria-label="Project name">
-    <button class="btn btn-primary">New project</button>
+  <form class="new-project" method="post" action="{{ url_for('new_project') }}" data-new-project>
+    <input class="cdt-input" name="name" required maxlength="200" placeholder="Name the new project, e.g. Jiyeh tower" aria-label="Project name">
+    <button class="cdt-btn primary"><svg class="cdt-ico"><use href="#i-plus"/></svg>New project</button>
   </form>
 </div>
 
-<div class="grid grid-3" style="margin-bottom:16px">
-  <div class="tile"><p class="tile-label">Projects</p><p class="tile-value">{{ projects|length }}</p>
-    <p class="tile-foot"><span class="muted">{{ projects|selectattr('model_name')|list|length }} with a model</span></p></div>
-  <div class="tile"><p class="tile-label">Films made</p><p class="tile-value">{{ films }}</p>
-    <p class="tile-foot"><span class="muted">rendered on cloud GPUs</span></p></div>
-  <div class="tile" data-machine><p class="tile-label">Render machine</p>
+{% set with_model = projects|selectattr('model_name')|list|length %}
+<div class="stats">
+  <div class="cdt-card stat">
+    <span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-cube"/></svg></span>
+    <div><p class="cdt-stat-label">Projects</p><p class="cdt-stat-number">{{ projects|length }}</p>
+      <p class="cdt-small cdt-muted">{{ with_model }} with a model</p></div>
+  </div>
+  <div class="cdt-card stat">
+    <span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-film"/></svg></span>
+    <div><p class="cdt-stat-label">Films made</p><p class="cdt-stat-number">{{ films }}</p>
+      <p class="cdt-small cdt-muted">rendered on cloud GPUs</p></div>
+  </div>
+  <div class="cdt-card stat" data-machine>
+    <span class="cdt-ico-tile"><svg class="cdt-ico lg"><use href="#i-chip"/></svg></span>
+    <div><p class="cdt-stat-label">Render machine</p>
     {% if not machine['configured'] %}
-      <p class="tile-value">Not set up</p><p class="tile-foot"><span class="state-warning">▲ The site has no worker token yet</span></p>
+      <p class="cdt-stat-number">Not set up</p><p class="cdt-small state-warning"><span class="cdt-dot error"></span> The site has no worker token yet</p>
     {% elif machine['awake'] %}
-      <p class="tile-value">Ready</p><p class="tile-foot"><span class="state-good">● Checked in {{ (machine['seen_ago'] // 60)|int }} min ago</span></p>
+      <p class="cdt-stat-number">Ready</p><p class="cdt-small state-good"><span class="cdt-dot ok"></span> Checked in {{ (machine['seen_ago'] // 60)|int }} min ago</p>
     {% elif machine['seen_ago'] is not none %}
-      <p class="tile-value">Asleep</p><p class="tile-foot"><span class="muted">Wakes when a film is asked for</span></p>
+      <p class="cdt-stat-number">Asleep</p><p class="cdt-small cdt-muted"><span class="cdt-dot"></span> Wakes when a film is asked for</p>
     {% else %}
-      <p class="tile-value">Waiting</p><p class="tile-foot"><span class="muted">It has not checked in yet</span></p>
+      <p class="cdt-stat-number">Waiting</p><p class="cdt-small cdt-muted"><span class="cdt-dot"></span> It has not checked in yet</p>
     {% endif %}
+    </div>
   </div>
 </div>
 
 {% if projects %}
-<div class="projects">
+{% set keys = [] %}{% for p in projects %}{% set _ = keys.append(status_key(p)|trim) %}{% endfor %}
+<div class="toolbar">
+  <label class="cdt-search toolbar-search">
+    <svg class="cdt-ico"><use href="#i-search"/></svg>
+    <input class="cdt-input" type="search" placeholder="Find a project or a model" aria-label="Find a project" data-project-search>
+  </label>
+  <div class="chips" role="group" aria-label="Show">
+    {% for key, word in [('all', 'All'), ('setup', 'Setting up'), ('torender', 'Ready to render'), ('rendering', 'Rendering'), ('ready', 'Film ready')] %}
+    {% set n = keys|length if key == 'all' else keys|select('equalto', key)|list|length %}
+    {% if key == 'all' or n %}<button type="button" class="cdt-filterchip" data-filter="{{ key }}" aria-pressed="{{ 'true' if key == 'all' else 'false' }}">{{ word }} <span class="n">{{ n }}</span></button>{% endif %}
+    {% endfor %}
+  </div>
+</div>
+
+<div class="projects" data-projects>
   {% for p in projects %}
   {% set pic = tile_url(p['latitude'], p['longitude']) %}
-  <a class="card project" href="{{ url_for('project_page', pid=p['id']) }}"
+  {% set m = p['model_summary'] %}
+  <a class="cdt-cardbutton project" href="{{ url_for('project_page', pid=p['id']) }}" data-key="{{ keys[loop.index0] }}"
+     data-text="{{ (p['name'] ~ ' ' ~ (p['model_name'] or ''))|lower }}"
      {% if p['job'] and p['job']['status'] in ('queued','running') %}data-live="{{ url_for('project_state', pid=p['id']) }}"{% endif %}>
     <div class="project-pic{{ '' if pic else ' none' }}" {% if pic %}style="background-image:url('{{ pic }}')"{% endif %}>
-      {% if not pic %}No location yet{% endif %}
-      <span data-badge>{{ status_badge(p) }}</span>
+      {% if not pic %}<span class="no-pic"><svg class="cdt-ico xl"><use href="#i-globe"/></svg><span>No location yet</span></span>{% endif %}
+      <span class="pic-badge" data-badge>{{ status_badge(p) }}</span>
     </div>
     <div class="project-body">
-      <div><strong>{{ p['name'] }}</strong>
-        <p class="small muted">{{ p['model_name'] or 'No model yet' }}{% if p['model_summary'] %} · {{ p['model_summary']['counts'].values()|sum }} elements, {{ p['model_summary']['storeys']|length }} storeys{% endif %}</p></div>
-      <div class="pips" aria-label="Progress">{% for k in ['model','location','sequence','video'] %}<i class="pip {{ p['states'][k] }}" title="{{ k|title }}: {{ p['states'][k] }}"></i>{% endfor %}</div>
+      <div class="project-title">
+        <strong>{{ p['name'] }}</strong>
+        <svg class="cdt-ico go"><use href="#i-arrow-right"/></svg>
+      </div>
+      <p class="cdt-small cdt-muted project-meta">
+        {% if p['model_name'] %}<span><svg class="cdt-ico"><use href="#i-cube"/></svg>{{ p['model_name'] }}</span>{% else %}<span>No model yet</span>{% endif %}
+        {% if m %}<span>{{ '{:,}'.format(m['counts'].values()|sum) }} elements</span>
+          <span>{{ m['sequence']|length }} {{ 'stages' if m['sequence'] and m['sequence'][0].get('stage') else 'steps' }}</span>{% endif %}
+      </p>
+      <ol class="pips" aria-label="Progress">
+        {% for k, word in [('model', 'Model'), ('location', 'Location'), ('sequence', 'Sequence'), ('video', 'Film')] %}
+        <li class="pip {{ p['states'][k] }}" title="{{ word }}: {{ p['states'][k] }}"><i></i><span>{{ word }}</span></li>
+        {% endfor %}
+      </ol>
     </div>
   </a>
   {% endfor %}
 </div>
+<div class="cdt-card cdt-empty hidden" data-no-match>
+  <span class="glyph"><svg class="cdt-ico xl"><use href="#i-search"/></svg></span>
+  <h2 class="cdt-title">No project matches</h2>
+  <p>Nothing here fits that search and filter.</p>
+  <button type="button" class="cdt-btn" data-clear-filter>Show every project</button>
+</div>
 {% else %}
-<div class="card">
-  <div class="card-head"><h2>How it works</h2></div>
-  <div class="card-body">
-    <ol class="how" style="padding:0;margin:0">
-      <li><b>Upload the IFC</b><span class="small muted">Export it from Revit: File › Export › IFC.</span></li>
-      <li><b>Place it on the map</b><span class="small muted">Read from the model's survey point, or drop the pin yourself.</span></li>
-      <li><b>Check the sequence</b><span class="small muted">See it go up in 3D, storey by storey, before any film is made.</span></li>
-      <li><b>Make the film</b><span class="small muted">Rendered on cloud GPUs in the real surroundings. You see it as it is made.</span></li>
+<div class="cdt-card">
+  <div class="cdt-empty">
+    <span class="glyph"><svg class="cdt-ico xl"><use href="#i-crane"/></svg></span>
+    <h2 class="cdt-title">No projects yet</h2>
+    <p>Start with a name. Then upload the IFC from Revit, place it on the map, check the build sequence and make the film.</p>
+    <button type="button" class="cdt-btn primary" data-new-project-button><svg class="cdt-ico"><use href="#i-plus"/></svg>New project</button>
+  </div>
+  <div class="cdt-card-foot how-foot">
+    <ol class="cdt-steps how">
+      <li><span class="cdt-step-mark">1</span><b>Upload the IFC</b><span class="cdt-small cdt-muted">In Revit: File › Export › IFC.</span></li>
+      <li><span class="cdt-step-mark">2</span><b>Place it on the map</b><span class="cdt-small cdt-muted">Read from the survey point, or drop the pin.</span></li>
+      <li><span class="cdt-step-mark">3</span><b>Check the sequence</b><span class="cdt-small cdt-muted">See it go up in 3D, stage by stage.</span></li>
+      <li><span class="cdt-step-mark">4</span><b>Make the film</b><span class="cdt-small cdt-muted">Played free in the browser, in its real place.</span></li>
     </ol>
-    <p class="small muted mt">Name your first project above to start.</p>
   </div>
 </div>
 {% endif %}
