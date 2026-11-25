@@ -1,0 +1,18 @@
+{
+ "version": 1,
+ "mesh": "survey.glb",
+ "plan": "plan.png",
+ "georef": null,
+ "metric": false,
+ "extent": [
+  1.6087,
+  1.852
+ ],
+ "faces": 450000,
+ "levelled": true,
+ "source": "odm.zip",
+ "centre": null,
+ "notes": [
+  "no position in the package: set on the site's point, to be placed by hand"
+ ]
+}
